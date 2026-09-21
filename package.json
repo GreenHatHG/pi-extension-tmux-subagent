@@ -1,0 +1,51 @@
+{
+	"name": "pi-extension-subagent",
+	"version": "1.0.0",
+	"description": "pi 插件：spawn_sub 工具。把多步或上下文很重的任务委派给 tmux 里隔离运行的 pi 子 agent，交付物写到 /tmp/pi-sub-<name>/result.md。",
+	"main": "index.ts",
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"subagent",
+		"tmux",
+		"coding-agent",
+		"ai",
+		"llm"
+	],
+	"author": "GreenHatHG <greenhat2333@gmail.com>",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/GreenHatHG/pi-extension-subagent.git"
+	},
+	"files": [
+		"index.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"dependencies": {
+		"typebox": "^1.3.7"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"@types/node": "^22.20.3",
+		"typescript": "^7.0.2"
+	},
+	"scripts": {
+		"format": "biome format --write .",
+		"lint": "biome lint .",
+		"check:biome": "biome check .",
+		"typecheck": "tsc --noEmit"
+	},
+	"type": "commonjs",
+	"packageManager": "pnpm@12.4.2"
+}
