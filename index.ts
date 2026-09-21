@@ -231,10 +231,12 @@ export default async function (pi: ExtensionAPI) {
 		label: "子 agent 委派",
 		description: "Delegate a task to an isolated pi sub-agent; deliverable written to /tmp/pi-sub-<name>/result.md",
 		promptSnippet: "spawn_sub — delegate multi-step or context-heavy tasks to an isolated tmux sub-agent",
+		// 只写调用前的决策信息（何时用、context 要自包含）。
+		// 调用后怎么拿结论（wait-for 频道名、exit 文件判读）依赖运行时才知道的值，
+		// 只能写在工具返回的 mainAgentNote 里，这里不放。
 		promptGuidelines: [
 			"Use spawn_sub when a task needs many steps, heavy exploration, or lots of tokens; keep single-step work in the main session.",
 			"Before calling spawn_sub, distill everything the sub-agent needs into the context parameter (file paths, conclusions, URLs, constraints) — it has zero memory of this conversation.",
-			"After spawn_sub returns, do not poll progress; when you need the conclusion run `tmux -L pi-sub wait-for <done>` in bash (blocking, zero tokens), then read /tmp/pi-sub-<name>/result.md.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
