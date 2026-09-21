@@ -19,10 +19,10 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 /tmp/pi-sub-<name>/
   ├── brief.md    主会话启动前生成：任务目标 + 从主会话蒸馏出的背景 + 工具使用策略
   │               + 交付物要求 + 行为边界
-  ├── result.md   子 agent 写的交付物。文件存在且退出码为 0，才算这次委派成功
+  ├── result.md   子 agent 写的交付物。等待方以 exit 文件判断这次委派成败
   ├── exit        子 agent 的退出码，由 pane 里的 shell 写入：0 = 正常收尾；
   │               非 0 = 失败；文件不存在 = 进程被强杀或崩溃
-  └── log         子 agent 的 stdout（wait 模式下批量运行 pi 的输出日志）
+  └── log         子 agent 的 stdout 日志（交互式 pi 的 TUI 输出，主要用于排查）
 ```
 
 ### 启动与收尾流程
@@ -36,12 +36,10 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
      'pi "Read the brief at …" ; echo $? > exit'
    ```
 
-   - `wait:false` 时子 agent 用交互式 pi 启动，任务做完不会自己退出进程，所以额外注入 ON_STOP
+   - 子 agent 用交互式 pi 启动，任务做完不会自己退出进程，所以额外注入 ON_STOP
      钩子：子 agent 调用 `stop_watchdog` 停止监控时，由扩展本地直接把退出码 0 写进 exit 文件，
      再用 wait-for 发完成信号。这样不需要子 agent 再跑一轮 bash 命令（之前试过，遇到 API 429
      故障时等待方会永久挂起，踩过坑）。
-   - `wait:true` 时子 agent 用 `pi -p` 非交互式运行：跑完这一个回合进程就退出，所以不需要
-     ON_STOP 钩子，pi 退出本身就触发完成信号；提前发会和 shell 写 exit 文件产生竞态。
 
 2. 再注册一个 pane-died 钩子兜底：子 agent 进程异常退出（崩溃/被杀）时也发完成信号。等待方
    发现 exit 文件缺失，就能识别出这是异常终止。
