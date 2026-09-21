@@ -3,6 +3,7 @@ import { randomInt } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const SOCKET = "pi-sub";
@@ -80,8 +81,10 @@ ${context?.trim() || "（无）"}
 
 interface LaunchResult {
 	ok: boolean;
-	/** 模型可读的完整说明（含运维速查或失败原因） */
+	/** 给主会话模型的说明（进入 LLM 上下文；应尽量短） */
 	text: string;
+	/** 给用户的运维速查（只在 TUI 渲染，不进 LLM 上下文） */
+	ops?: string;
 	session?: string;
 	artifactPath?: string;
 	exitFile?: string;
@@ -179,11 +182,12 @@ async function launchSub(question: string, context: string | undefined): Promise
 		};
 	}
 
-	// 常用运维命令（用户可直接复制到终端粘贴执行）
+	// 速查表只给用户：放 details，经 renderResult 渲染，不进 LLM 上下文
 	const ops = opsCheatsheet(session, artifactPath, exitFile, done);
 
+	// LLM 只需要等待/读取结论的最小说明
 	const mainAgentNote = [
-		"给主会话模型的说明：不要轮询进度。需要结论时在 bash 执行 " +
+		"不要轮询进度。需要结论时在 bash 执行 " +
 			`tmux -L ${SOCKET} wait-for ${done}` +
 			"（阻塞等待，零 token；子 agent 完成发信号或进程退出时 hook 自动发信号），",
 		`返回后 read ${artifactPath}。同目录 exit 文件为 0 = 正常收尾；非 0 或缺失 = 失败/异常终止。`,
@@ -191,15 +195,8 @@ async function launchSub(question: string, context: string | undefined): Promise
 
 	return {
 		ok: true,
-		text: [
-			`已启动子 agent（交付物：${artifactPath}）`,
-			"",
-			"常用操作（在任意终端直接复制粘贴）：",
-			"```bash",
-			ops,
-			"```",
-			mainAgentNote,
-		].join("\n"),
+		text: `已启动子 agent（交付物：${artifactPath}）。${mainAgentNote}`,
+		ops,
 		session,
 		artifactPath,
 		exitFile,
@@ -262,10 +259,19 @@ export default async function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params) {
+			const r = await launchSub(params.question, params.context);
 			return {
-				content: [{ type: "text", text: (await launchSub(params.question, params.context)).text }],
-				details: {},
+				content: [{ type: "text", text: r.text }],
+				details: { ops: r.ops },
 			};
+		},
+		renderResult(result, _options, theme, _context) {
+			const ops = (result.details as { ops?: string } | undefined)?.ops;
+			if (!ops) {
+				const first = result.content[0];
+				return new Text(first?.type === "text" ? first.text : "", 0, 0);
+			}
+			return new Text(theme.fg("muted", `已启动。常用操作（复制到任意终端）：\n${ops}`), 0, 0);
 		},
 	});
 }
