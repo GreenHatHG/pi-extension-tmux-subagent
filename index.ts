@@ -52,7 +52,7 @@ function runTmux(args: string[]): Promise<{ code: number; stdout: string; stderr
 	return run("tmux", ["-L", SOCKET, ...args]);
 }
 
-function buildBrief(question: string, context: string | undefined, artifactPath: string, done: string): string {
+function buildBrief(question: string, context: string | undefined, artifactPath: string): string {
 	return `# 任务简报
 
 ## 目标
@@ -61,20 +61,10 @@ ${question}
 ## 已知背景（来自主会话，本简报是你唯一的上下文来源）
 ${context?.trim() || "（无）"}
 
-## 工具策略
-本会话是标准 pi 环境，工具与主会话一致（read/bash/edit/write 及已安装扩展注册的工具等），
-工具自带的 description 就是完整用法，按需使用即可。
-需要联网时用 web_search / fetch_content，不要尝试其他联网手段
-
 ## 交付物
 - 交付物写入 ${artifactPath}：结论优先，每条附来源 URL（如适用），标注未核实的内容
-- 全部完成后（交付物已写完、无其他内容要输出时）把 stop_watchdog 作为最后一个动作调用，
-  停止自动继续监控——完成信号（${done}）会由
-  watchdog 的 PI_WATCHDOG_ON_STOP 钩子自动发送，调用后回合同步结束，之后不能再有任何输出
-（stop_watchdog 即发信号；即使进程异常退出，启动器的 pane-died hook 也会代发信号，等待方以无产物/无退出码识别失败）
 
 ## 边界
-- 不要修改项目文件；临时产物一律放在 /tmp
 - 不要再委派新子 agent（spawn_sub）：你自己在执行 brief，委派只属于主会话
 - tmux 命令永远带 -L ${SOCKET}（专用 socket）；禁止对默认 tmux server 执行任何 kill 操作`;
 }
@@ -117,7 +107,7 @@ async function launchSub(question: string, context: string | undefined): Promise
 	}
 
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(briefPath, buildBrief(question, context, artifactPath, done), { mode: 0o600 });
+	writeFileSync(briefPath, buildBrief(question, context, artifactPath), { mode: 0o600 });
 	// 上次同名任务残留的退出码会污染本次成败判定，启动前清掉
 	try {
 		rmSync(exitFile, { force: true });
