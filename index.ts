@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomInt } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -14,6 +15,15 @@ function kebab(s: string): string {
 			.replace(/^-+|-+$/g, "")
 			.slice(0, 40) || "task"
 	);
+}
+
+const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/** 4 位 base36 随机后缀（约 168 万组合）：保证并发任务不撞会话/频道/目录名 */
+function shortId(): string {
+	let id = "";
+	for (let i = 0; i < 4; i++) id += ID_ALPHABET[randomInt(ID_ALPHABET.length)];
+	return id;
 }
 
 function shQuote(s: string): string {
@@ -83,8 +93,8 @@ async function launchSub(question: string, context: string | undefined): Promise
 	if (!question.trim()) {
 		return { ok: false, text: "缺少任务描述（question）。" };
 	}
-	const name = kebab(question);
-	const session = name;
+	const session = `${kebab(question)}-${shortId()}`;
+	const name = session;
 	const done = `${session}-done`;
 	const dir = join("/tmp", `pi-sub-${name}`);
 	const briefPath = join(dir, "brief.md");
@@ -92,7 +102,8 @@ async function launchSub(question: string, context: string | undefined): Promise
 	const exitFile = join(dir, "exit");
 	const logPath = join(dir, "log");
 
-	// 同名会话已存在 → 不重复拉起，报告现状让用户决定
+	// 会话名带随机后缀，正常情况下不会命中；兜底场景
+	// 仍不重复拉起，报告现状让用户决定
 	const has = await runTmux(["has-session", "-t", session]);
 	if (has.code === 0) {
 		const ls = await runTmux(["ls"]);
@@ -120,6 +131,10 @@ async function launchSub(question: string, context: string | undefined): Promise
 	// pi 被信号硬杀时 shell 一并死掉，exit 缺失 → 等待方识别为异常终止。
 	// pane 内不加 timeout：macOS 无此命令（GNU coreutils 专属，zsh: command not found，
 	// exit 127 秒死——踩过）。挂死防护交给 watchdog 的 max 上限与人工围观。
+	// 主进程不等待：new-session -d 创建会话即返回（连 pi 是否完全启动都不保证）；
+	// $? 是上一条命令的退出码，pane shell 等 pi 结束后把它写入 exit 文件。
+	// 等待发生在后台 pane 内，主进程靠 wait-for done 事件驱动感知完成，
+	// 再读 exit 文件判定成败（0 = stop_watchdog 发出的正常完成）。
 	const inner = `pi ${briefTask}; echo $? > ${exitFile}`;
 
 	// watchdog 经 tmux -e 注入会话环境：pane 里的 pi 能读到，不出现在启动命令字符串里。
@@ -142,8 +157,8 @@ async function launchSub(question: string, context: string | undefined): Promise
 	}
 
 	// pane 进程退出（正常收尾/崩溃/被杀）时自动发完成信号——不依赖子 agent 的 LLM，
-	// 主会话因此无需轮询即可感知失败。done 频道名经 kebab() 只含字母数字与连字符，
-	// 单引号内联安全；hook 挂在 session 名上随 server 存活，同名会话复用同一 hook。
+	// 主会话因此无需轮询即可感知失败。会话名含随机后缀，并发任务各占独立 done 频道，
+	// 不会互相串信号；done 频道名只含字母数字与连字符，单引号内联安全。
 	const hook = await runTmux([
 		"set-hook",
 		"-t",
