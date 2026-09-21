@@ -1,12 +1,10 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const SOCKET = "pi-sub";
-/** wait 模式最长阻塞时间，超时后返回"仍在运行"而不是永久挂起 */
-const MAX_WAIT_MS = 20 * 60 * 1000;
 
 function kebab(s: string): string {
 	return (
@@ -43,42 +41,7 @@ function runTmux(args: string[]): Promise<{ code: number; stdout: string; stderr
 	return run("tmux", ["-L", SOCKET, ...args]);
 }
 
-/** 阻塞等待子 agent 的 wait-for 信号；abort/超时安全退出（不杀子 agent） */
-function waitForSignal(done: string, signal: AbortSignal): Promise<"done" | "timeout" | "aborted"> {
-	return new Promise((resolve) => {
-		const proc = spawn("tmux", ["-L", SOCKET, "wait-for", done], {
-			env: { ...process.env, TMUX: "" },
-			stdio: "ignore",
-		});
-		let settled = false;
-		const finish = (r: "done" | "timeout" | "aborted") => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			signal.removeEventListener("abort", onAbort);
-			resolve(r);
-		};
-		const timer = setTimeout(() => {
-			proc.kill("SIGKILL");
-			finish("timeout");
-		}, MAX_WAIT_MS);
-		const onAbort = () => {
-			proc.kill("SIGKILL");
-			finish("aborted");
-		};
-		signal.addEventListener("abort", onAbort, { once: true });
-		proc.on("close", (code) => finish(code === 0 ? "done" : "aborted"));
-		proc.on("error", () => finish("aborted"));
-	});
-}
-
-function buildBrief(
-	question: string,
-	context: string | undefined,
-	artifactPath: string,
-	done: string,
-	wait: boolean,
-): string {
+function buildBrief(question: string, context: string | undefined, artifactPath: string, done: string): string {
 	return `# 任务简报
 
 ## 目标
@@ -97,11 +60,7 @@ ${context?.trim() || "（无）"}
 - 全部完成后（交付物已写完、无其他内容要输出时）把 stop_watchdog 作为最后一个动作调用，
   停止自动继续监控——完成信号（${done}）会由
   watchdog 的 PI_WATCHDOG_ON_STOP 钩子自动发送，调用后回合同步结束，之后不能再有任何输出
-${
-	wait
-		? "（本任务为 batch 模式：pi 进程退出时主会话侧会自动收到通知）"
-		: "（stop_watchdog 即发信号；即使进程异常退出，启动器的 pane-died hook 也会代发信号，等待方以无产物/无退出码识别失败）"
-}
+（stop_watchdog 即发信号；即使进程异常退出，启动器的 pane-died hook 也会代发信号，等待方以无产物/无退出码识别失败）
 
 ## 边界
 - 不要修改项目文件；临时产物一律放在 /tmp
@@ -120,12 +79,7 @@ interface LaunchResult {
 	logPath?: string;
 }
 
-async function launchSub(
-	question: string,
-	context: string | undefined,
-	wait: boolean,
-	signal: AbortSignal | undefined,
-): Promise<LaunchResult> {
+async function launchSub(question: string, context: string | undefined): Promise<LaunchResult> {
 	if (!question.trim()) {
 		return { ok: false, text: "缺少任务描述（question）。" };
 	}
@@ -149,7 +103,7 @@ async function launchSub(
 	}
 
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(briefPath, buildBrief(question, context, artifactPath, done, wait), { mode: 0o600 });
+	writeFileSync(briefPath, buildBrief(question, context, artifactPath, done), { mode: 0o600 });
 	// 上次同名任务残留的退出码会污染本次成败判定，启动前清掉
 	try {
 		rmSync(exitFile, { force: true });
@@ -157,9 +111,8 @@ async function launchSub(
 		/* ignore */
 	}
 
-	// 子 agent 的启动 prompt 只剩一个位置参数（普通 prompt 路径，交互与批处理模式都完整 await）。
-	// 位置参数保证批处理模式完整等待回合结束（命令处理器里的 sendUserMessage 是
-	// fire-and-forget，-p 模式会在后台回合开始前退出——已踩坑）。
+	// 子 agent 的启动 prompt 只剩一个位置参数（普通 prompt 路径，完整 await）。
+	// 位置参数保证完整等待回合结束（命令处理器里的 sendUserMessage 是 fire-and-forget）。
 	const briefTask = shQuote(`Read the brief at ${briefPath} and execute it fully.`);
 	// 完成信号由 watchdog 的 PI_WATCHDOG_ON_STOP 钩子在 AI 调用 stop_watchdog 时发出
 	//（不经 LLM 再跑一轮 bash，无 API 故障风险）；pane 进程异常退出（崩溃/被杀）时
@@ -167,22 +120,19 @@ async function launchSub(
 	// pi 被信号硬杀时 shell 一并死掉，exit 缺失 → 等待方识别为异常终止。
 	// pane 内不加 timeout：macOS 无此命令（GNU coreutils 专属，zsh: command not found，
 	// exit 127 秒死——踩过）。挂死防护交给 watchdog 的 max 上限与人工围观。
-	const inner = wait
-		? `pi -p --no-session ${briefTask} > ${logPath} 2>&1; echo $? > ${exitFile}`
-		: `pi ${briefTask}; echo $? > ${exitFile}`;
+	const inner = `pi ${briefTask}; echo $? > ${exitFile}`;
 
 	// watchdog 经 tmux -e 注入会话环境：pane 里的 pi 能读到，不出现在启动命令字符串里。
-	// interactive 模式额外注入完成钩子：AI 调用 stop_watchdog 停止监控时，由扩展本地经
-	// sh -c 先把 0 写入 exit 文件（pi 此刻仍在运行，pane shell 要到会话结束才写退出码；
-	// 先写 0 让等待方在信号时刻读到「正常完成」，不会把 exit 缺失误判为崩溃），
-	// 再发完成信号。batch 模式 pi -p 退出即信号，不注入钩子：提前发信号会让等待方与
-	// pane shell 的 exit 写入产生竞态。
+	// 注入完成钩子：AI 调用 stop_watchdog 停止监控时，由扩展本地经 sh -c 先把 0 写入
+	// exit 文件（pi 此刻仍在运行，pane shell 要到会话结束才写退出码；先写 0 让等待方
+	// 在信号时刻读到「正常完成」，不会把 exit 缺失误判为崩溃），再发完成信号。
 	const envArgs = [
 		"-e",
 		"PI_SUBAGENT=1",
 		"-e",
 		"PI_WATCHDOG=timeout=5 max=50 mode=keep",
-		...(wait ? [] : ["-e", `PI_WATCHDOG_ON_STOP=echo 0 > ${exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${done}`]),
+		"-e",
+		`PI_WATCHDOG_ON_STOP=echo 0 > ${exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${done}`,
 	];
 	// 注意：-e 是 new-session 命令的参数，必须跟在 new-session 后面；
 	// 放在 tmux 全局选项位置会报 "unknown option -- e"
@@ -201,113 +151,11 @@ async function launchSub(
 		"pane-died",
 		`run-shell -b 'TMUX= tmux -L ${SOCKET} wait-for -S ${done}'`,
 	]);
-	if (hook.code !== 0 && wait) {
-		// batch 模式的 brief 不要求 LLM 发信号，hook 缺失 = 信号无来源，必须回滚
-		await runTmux(["kill-session", "-t", session]);
-		return {
-			ok: false,
-			text: `注册 pane-died hook 失败（${(hook.stderr || hook.stdout).trim()}），已回收会话；完成信号无法保证送达，未启动子 agent。`,
-		};
-	}
-	// 交互模式 hook 注册失败不回滚：brief 仍要求 LLM 完成时发信号，只是失去崩溃兜底
-
-	if (wait) {
-		const result = await waitForSignal(done, signal ?? new AbortController().signal);
-		if (result === "done") {
-			// exit 文件由 pane shell 在发信号之前写好（先写码 → pi 退出 → shell 退出 →
-			// hook 触发），读到的是确定值；缺失即 pi 与 shell 一并被硬杀/崩溃
-			const raw = (() => {
-				try {
-					return readFileSync(exitFile, "utf-8").trim();
-				} catch {
-					return "";
-				}
-			})();
-			const code = /^\d+$/.test(raw) ? parseInt(raw, 10) : null;
-			if (code === 0) {
-				// 退出码 0 ≠ 成功：交付物缺失或 stdout 空（batch 模式必有最终总结）说明回合
-				// 被静默截断（偶发，未复现，疑似 provider 侧），不能报「正常完成」让等待方
-				// 去 read 一个不存在的文件
-				const hasArtifact = existsSync(artifactPath);
-				const logEmpty = (() => {
-					try {
-						return readFileSync(logPath, "utf-8").trim().length === 0;
-					} catch {
-						return false; // 日志读不到不据此判异常
-					}
-				})();
-				if (hasArtifact && !(wait && logEmpty)) {
-					return {
-						ok: true,
-						text: `子 agent 已正常完成（exit 0）。交付物在 ${artifactPath}，需要结论时 read 该文件。（stdout 日志：${logPath}）`,
-						session,
-						artifactPath,
-						exitFile,
-						done,
-						logPath,
-					};
-				}
-				return {
-					ok: false,
-					text: [
-						`子 agent 退出码为 0 但${hasArtifact ? " stdout 日志为空" : `未留下交付物 ${artifactPath}`}（异常终止：回合疑似被静默截断，退出码不可信）。`,
-						`日志：${logPath}。排查后可重新 spawn_sub 重试。`,
-					].join("\n"),
-					session,
-					artifactPath,
-					exitFile,
-					done,
-					logPath,
-				};
-			}
-			if (code === null) {
-				return {
-					ok: true,
-					text: `子 agent 进程已结束但未留下退出码（被强杀或崩溃，非正常收尾）。交付物可能缺失或不完整：${artifactPath}；日志：${logPath}。`,
-					session,
-					artifactPath,
-					exitFile,
-					done,
-					logPath,
-				};
-			}
-			// 124/137 = pi 进程被外部 SIGKILL/SIGTERM 硬杀（如用户手动 kill；pane 内无 timeout 命令，
-			// macOS 没有 GNU coreutils）。exit 文件有值说明 pane shell 存活到了 pi 退出，仍算有结论可看
-			if (code === 124 || code === 137) {
-				return {
-					ok: true,
-					text: `子 agent 进程被外部硬杀（exit ${code}，如手动 kill）。看 log 尾部定位卡点：${logPath}；交付物可能不完整：${artifactPath}。`,
-					session,
-					artifactPath,
-					exitFile,
-					done,
-					logPath,
-				};
-			}
-			return {
-				ok: true,
-				text: `子 agent 失败退出（exit ${code}）。日志：${logPath}。排查后可重新 spawn_sub。`,
-				session,
-				artifactPath,
-				exitFile,
-				done,
-				logPath,
-			};
-		}
-		if (result === "timeout") {
-			return {
-				ok: true,
-				text: `等待超过 ${MAX_WAIT_MS / 60000} 分钟仍未完成，子 agent 仍在 tmux 会话 ${session} 中运行。可稍后用 bash 执行 tmux -L ${SOCKET} wait-for ${done} 继续等，或 read 交付物文件看已有进展。`,
-				session,
-				artifactPath,
-				exitFile,
-				done,
-				logPath,
-			};
-		}
+	if (hook.code !== 0) {
+		// 不回滚：brief 仍要求 LLM 完成时发信号，只是失去崩溃兜底
 		return {
 			ok: true,
-			text: `等待被中止，但子 agent 仍在后台运行（tmux 会话 ${session}）。可稍后 tmux -L ${SOCKET} wait-for ${done} 继续等。`,
+			text: `已启动子 agent，但注册 pane-died hook 失败（${(hook.stderr || hook.stdout).trim()}）：进程崩溃时不再自动发完成信号，需人工围观或超时排查。交付物：${artifactPath}`,
 			session,
 			artifactPath,
 			exitFile,
@@ -384,7 +232,7 @@ export default async function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use spawn_sub when a task needs many steps, heavy exploration, or lots of tokens; keep single-step work in the main session.",
 			"Before calling spawn_sub, distill everything the sub-agent needs into the context parameter (file paths, conclusions, URLs, constraints) — it has zero memory of this conversation.",
-			"With spawn_sub wait:true (default false), the call blocks up to 20 minutes until the deliverable at /tmp/pi-sub-<name>/result.md is ready; with wait:false, poll later via the returned wait-for command instead of guessing progress.",
+			"After spawn_sub returns, do not poll progress; when you need the conclusion run `tmux -L pi-sub wait-for <done>` in bash (blocking, zero tokens), then read /tmp/pi-sub-<name>/result.md.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
@@ -397,18 +245,10 @@ export default async function (pi: ExtensionAPI) {
 						"Session context relevant to the task: file paths, conclusions so far, URLs, user preferences or constraints. The sub-agent has zero memory of this conversation — anything not written here is unknown to it",
 				}),
 			),
-			wait: Type.Optional(
-				Type.Boolean({
-					description:
-						"true = block until the sub-agent finishes (up to 20 minutes); default false = return immediately, read the deliverable later",
-				}),
-			),
 		}),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params) {
 			return {
-				content: [
-					{ type: "text", text: (await launchSub(params.question, params.context, params.wait ?? false, signal)).text },
-				],
+				content: [{ type: "text", text: (await launchSub(params.question, params.context)).text }],
 				details: {},
 			};
 		},
