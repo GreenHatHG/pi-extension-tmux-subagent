@@ -17,7 +17,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/GreenHatHG/pi-extension-subagent.git"
+		"url": "git+https://github.com/GreenHatHG/pi-extension-tmux-subagent.git"
 	},
 	"files": [
 		"index.ts",
