@@ -62,7 +62,7 @@ ${question}
 ${context?.trim() || "（无）"}
 
 ## 交付物
-- 交付物写入 ${artifactPath}：结论优先，每条附来源 URL（如适用），标注未核实的内容
+- 交付物写入 ${artifactPath}：结论优先，克制篇幅，每条附来源 URL（如适用），标注未核实的内容
 
 ## 边界
 - 不要再委派新子 agent（spawn_sub）：你自己在执行 brief，委派只属于主会话
@@ -175,12 +175,21 @@ async function launchSub(question: string, context: string | undefined): Promise
 	// 速查表只给用户：放 details，经 renderResult 渲染，不进 LLM 上下文
 	const ops = opsCheatsheet(session, artifactPath, exitFile, done);
 
-	// LLM 只需要等待/读取结论的最小说明
+	// LLM 只需要等待/读取结论的最小说明。等待命令必须带 timeout 参数：wait-for 的
+	// 完成信号是瞬时的（无等待者时直接丢弃），不能无限盲等——hook 注册失败或子 agent
+	// 挂死时信号可能永远不来。timeout 命中后按会话状态判读，不能简单地重发 wait-for
+	// （信号可能在空窗期已丢失，重发会永久阻塞）：会话已消失 = 已结束（信号被错过），
+	// 直接读 exit/result 判成败；会话还在 = 确实没跑完，再等一次。
 	const mainAgentNote = [
-		"不要轮询进度。需要结论时在 bash 执行 " +
+		"需要结论时在 bash 执行 " +
 			`tmux -L ${SOCKET} wait-for ${done}` +
-			"（阻塞等待，零 token；子 agent 完成发信号或进程退出时 hook 自动发信号），",
-		`返回后 read ${artifactPath}。同目录 exit 文件为 0 = 正常收尾；非 0 或缺失 = 失败/异常终止。`,
+			"，必须用 bash 的 timeout 参数限时（建议 600s，阻塞等待零 token）",
+		"。若 timeout 命中：先执行 `TMUX= tmux -L " +
+			SOCKET +
+			" has-session -t " +
+			`${session}` +
+			"`，会话已消失 = 已结束（读 exit/result 判成败即可），仍在 = 再等一次 wait-for",
+		`。返回后 read ${artifactPath}。exit 文件为 0 = 正常收尾；非 0 或缺失 = 失败/异常终止。`,
 	].join("");
 
 	return {
@@ -210,6 +219,9 @@ tmux -L pi-sub ls
 cat ${artifactPath}
 
 # 阻塞等它完成（子 agent 完成发信号或进程退出时自动发信号，无论成败；命令随即返回）
+# 建议用工具 timeout 限时跑（如 600s）：信号是瞬时的，若 timeout 命中先
+# tmux -L pi-sub has-session -t <会话名> 判状态——会话已消失 = 已结束，直接读
+# exit/result；仍在 = 重发本命令再等
 tmux -L pi-sub wait-for ${done}
 
 # 退出码（0=正常收尾；非 0=失败；文件缺失=被强杀/崩溃）
