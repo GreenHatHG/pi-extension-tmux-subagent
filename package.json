@@ -22,6 +22,12 @@
 	"files": [
 		"index.ts",
 		"advisor.ts",
+		"launch.ts",
+		"completion.ts",
+		"brief.ts",
+		"paths.ts",
+		"tmux.ts",
+		"selfcheck.ts",
 		"README.md",
 		"LICENSE"
 	],

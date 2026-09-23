@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { shQuote } from "./tmux";
 
 // ---------- advisor 配置（可选功能：默认关闭，显式配置才注册工具） ----------
 
@@ -73,11 +74,6 @@ Rules:
 - Ground advice in the given context. Name files, functions, and line numbers where possible.
 - Be concise and directive. No preamble, no apologies, no meta-commentary — just the guidance.
 - Deliverable protocol (from your brief): write your full guidance to the result.md path given there.`;
-
-/** shell 单引号安全包装：内联进 tmux run-shell 等命令串时防注入/断词 */
-export function shQuote(s: string): string {
-	return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
 /**
  * advisor 模式下子 agent pi 的预设 flag（放在启动参数最前面）：限制工具集 + 换 advisor

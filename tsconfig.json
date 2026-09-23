@@ -8,5 +8,5 @@
 		"skipLibCheck": true,
 		"types": ["node"]
 	},
-	"include": ["index.ts", "advisor.ts"]
+	"include": ["index.ts", "advisor.ts", "launch.ts", "completion.ts", "brief.ts", "paths.ts", "tmux.ts", "selfcheck.ts"]
 }
