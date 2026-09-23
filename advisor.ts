@@ -51,13 +51,14 @@ export function resolveAdvisor(): AdvisorSettings {
 
 // ---------- advisor 模式下子 agent 的预设（brief / 工具集 / 系统提示词） ----------
 
-/** advisor 模式允许的子 agent 工具集：判断型最小集，交付靠 write + stop_watchdog */
+/** advisor 模式允许的子 agent 工具集：判断型最小集，交付靠 write（+ watchdog 收尾时的 stop_watchdog，无 watchdog 时由调用方滤掉） */
 export const ADVISOR_TOOLS = ["read", "write", "stop_watchdog"];
 
 /**
  * advisor 模式下子 agent 的系统提示词（pi --system-prompt 替换默认提示词）。
- * 取材 rpiv-advisor，按本项目的执行环境改写：advisor 有 read/write/stop_watchdog
- * 三个工具，交付协议与任务模式一致（写 result.md，然后 stop_watchdog）。
+ * 取材 rpiv-advisor，按本项目的执行环境改写：advisor 有 read/write（watchdog 收尾时
+ * 另有 stop_watchdog）三个工具，交付协议与任务模式一致（写 result.md；收尾方式
+ * 由 brief 按运行模式交代，不写死在这里）。
  */
 export const ADVISOR_SYSTEM_PROMPT = `You are an advisor model in an advisor-strategy pattern. An executor agent running a real task consults you with a question plus a self-contained context summary; you answer with judgment, not exploration.
 
@@ -73,8 +74,15 @@ Rules:
 - Be concise and directive. No preamble, no apologies, no meta-commentary — just the guidance.
 - Deliverable protocol (from your brief): write your full guidance to the result.md path given there.`;
 
-/** advisor 模式的 brief 模板：只求判断，不求执行 */
-export function buildAdvisorBrief(question: string, context: string | undefined, artifactPath: string): string {
+/** advisor 模式的 brief 模板：只求判断，不求执行。useWatchdog = 收尾走 stop_watchdog（false 时 pi -p 跑完自动退出） */
+export function buildAdvisorBrief(
+	question: string,
+	context: string | undefined,
+	artifactPath: string,
+	useWatchdog: boolean,
+): string {
+	const tools = useWatchdog ? "read/write/stop_watchdog" : "read/write";
+	const finish = useWatchdog ? "，然后调用 stop_watchdog 结束" : "（批处理模式，写完即结束，无需其他收尾动作）";
 	return `# 咨询简报
 
 ## 问题
@@ -89,10 +97,10 @@ ${context?.trim() || "（无）"}
 - 只在需要核实背景中的说法时才 read 文件；不做任何实质修改（write 仅限交付物）
 
 ## 交付物
-- 将完整建议写入 ${artifactPath}，然后调用 stop_watchdog 结束
+- 将完整建议写入 ${artifactPath}${finish}
 
 ## 边界
-- 你的工具只有 read/write/stop_watchdog，这是设计使然：你负责判断，执行属于主会话`;
+- 你的工具只有 ${tools}，这是设计使然：你负责判断，执行属于主会话`;
 }
 
 // ---------- advisor 工具注册 ----------
