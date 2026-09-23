@@ -5,6 +5,14 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	ADVISOR_SYSTEM_PROMPT,
+	ADVISOR_TOOLS,
+	buildAdvisorBrief,
+	notifyAdvisorMissingModel,
+	resolveAdvisor,
+	setupAdvisor,
+} from "./advisor";
 
 const SOCKET = "pi-sub";
 
@@ -69,6 +77,16 @@ ${context?.trim() || "（无）"}
 - tmux 命令永远带 -L ${SOCKET}（专用 socket）；禁止对默认 tmux server 执行任何 kill 操作`;
 }
 
+interface LaunchOpts {
+	/** "advisor" 用咨询简报模板 + 限制工具集 + 换系统提示词；缺省 = 任务模式 */
+	mode?: "advisor";
+	/**
+	 * 追加到预设之后的子 agent pi CLI 参数（已 shQuote）。pi 的单值 flag
+	 * （--model/--tools/--system-prompt）是后值覆盖前值，可覆盖模式预设。
+	 */
+	extraArgs?: string[];
+}
+
 interface LaunchResult {
 	ok: boolean;
 	/** 给主会话模型的说明（进入 LLM 上下文；应尽量短） */
@@ -82,7 +100,7 @@ interface LaunchResult {
 	logPath?: string;
 }
 
-async function launchSub(question: string, context: string | undefined): Promise<LaunchResult> {
+async function launchSub(question: string, context: string | undefined, opts?: LaunchOpts): Promise<LaunchResult> {
 	if (!question.trim()) {
 		return { ok: false, text: "缺少任务描述（question）。" };
 	}
@@ -107,7 +125,11 @@ async function launchSub(question: string, context: string | undefined): Promise
 	}
 
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(briefPath, buildBrief(question, context, artifactPath), { mode: 0o600 });
+	const brief =
+		opts?.mode === "advisor"
+			? buildAdvisorBrief(question, context, artifactPath)
+			: buildBrief(question, context, artifactPath);
+	writeFileSync(briefPath, brief, { mode: 0o600 });
 	// 上次同名任务残留的退出码会污染本次成败判定，启动前清掉
 	try {
 		rmSync(exitFile, { force: true });
@@ -128,7 +150,15 @@ async function launchSub(question: string, context: string | undefined): Promise
 	// $? 是上一条命令的退出码，pane shell 等 pi 结束后把它写入 exit 文件。
 	// 等待发生在后台 pane 内，主进程靠 wait-for done 事件驱动感知完成，
 	// 再读 exit 文件判定成败（0 = stop_watchdog 发出的正常完成）。
-	const inner = `pi ${briefTask}; echo $? > ${exitFile}`;
+	// 模式预设 flag 在前（advisor 模式限制工具集、换 advisor 人格提示词），
+	// 调用方的 extraArgs 在后：pi 的参数解析对 --model/--tools/--system-prompt
+	// 这类单值 flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
+	const flags: string[] =
+		opts?.mode === "advisor"
+			? ["--tools", shQuote(ADVISOR_TOOLS.join(",")), "--system-prompt", shQuote(ADVISOR_SYSTEM_PROMPT)]
+			: [];
+	if (opts?.extraArgs?.length) flags.push(...opts.extraArgs);
+	const inner = `pi ${flags.join(" ")} ${briefTask}; echo $? > ${exitFile}`;
 
 	// watchdog 经 tmux -e 注入会话环境：pane 里的 pi 能读到，不出现在启动命令字符串里。
 	// 注入完成钩子：AI 调用 stop_watchdog 停止监控时，由扩展本地经 sh -c 先把 0 写入
@@ -238,6 +268,33 @@ export default async function (pi: ExtensionAPI) {
 	// 子 agent pane 内（启动时经 tmux -e 注入 PI_SUBAGENT=1）不再注册 spawn_sub，
 	// 从机制上禁止嵌套委派，替代原先的 promptGuidelines 软约束。
 	if (process.env.PI_SUBAGENT === "1") return;
+
+	// ---------- advisor（可选功能）----------
+	// 默认不注册：未配置时主模型看不到这个工具，promptGuidelines 也不会注入（零开销）。
+	// 开关与工具定义见 advisor.ts；这里只负责把 launchSub 包成 AdvisorLaunch 回调，
+	// 并补 --model 预设（advisor 模型/thinking 完全由配置决定，模型不可干预）。
+	const advisor = resolveAdvisor();
+	if (advisor.enabled && advisor.model) {
+		const advisorModel = advisor.model;
+		// enabled 蕴含 model 非空（resolveAdvisor 保证）：沿用默认模型就没有 advisor 的意义
+		setupAdvisor(pi, (question, context) =>
+			launchSub(question, context, { mode: "advisor", extraArgs: [`--model ${shQuote(advisorModel)}`] }),
+		);
+		// 显式提示：开启时让用户在会话里能直接看到 advisor 已注册及其模型/思考档位，
+		// 不用靠问模型或触发调用来确认。模型串格式为 pi --model 的 "provider/id:thinking"，
+		// ":" 后是思考档位（如 max/high），没有 ":" 就只展示模型。
+		pi.on("session_start", (_event, ctx) => {
+			const colon = advisorModel.lastIndexOf(":");
+			const model = colon > 0 ? advisorModel.slice(0, colon) : advisorModel;
+			const thinking = colon > 0 ? advisorModel.slice(colon + 1) : undefined;
+			ctx.ui.notify(`advisor 已注册（模型：${model}${thinking ? `，思考档位：${thinking}` : ""}）`, "info");
+		});
+	} else if (advisor.missingModel) {
+		// 配了 enabled: true 但没配模型：不开启，直接在会话里提示用户补配置
+		notifyAdvisorMissingModel(pi);
+	}
+
+	// ---------- spawn_sub ----------
 	pi.registerTool({
 		name: "spawn_sub",
 		label: "子 agent 委派",

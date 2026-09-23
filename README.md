@@ -55,11 +55,33 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 子 agent 自己也会加载本扩展，所以 spawn_sub 对子 agent 同样可用（未限制嵌套深度，谨慎 fan-out）。
 
+## advisor（可选功能）
+
+`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog`。
+
+**默认不注册**：未配置时主模型看不到这个工具，promptGuidelines 也不注入（零开销）。开启即配置：
+
+- 环境变量 `PI_ADVISOR_MODEL=provider/id:thinking` → 开，且用该模型
+- `~/.pi/agent/subagent_advisor.json`（可用 `PI_CODING_AGENT_DIR` 重定向目录）：
+
+  ```json
+  {
+    "advisor": {
+      "model": "anthropic/claude-opus-4-6:high",
+      "enabled": true
+    }
+  }
+  ```
+
+  配了 `model` 即视为启用；`enabled: true` 而不配 `model` 则**不开**（advisor 的意义在更强的模型，沿用默认模型没有意义），pi 会在会话里提示补配置；`enabled: false` 显式关闭。
+
+优先级：`PI_ADVISOR_MODEL` 环境变量 > 配置文件 `model`。只配 `enabled: true` 而没有模型不会开启。模型/thinking 由配置决定，调用方不能通过参数传 `--model`。
+
 ## 上下文与 token 开销
 
 ### 常驻开销（每次对话都在）
 
-工具注册后会进入上下文，模型每一轮请求都能看到。来自 `index.ts` 的固定字符串：
+工具注册后会进入上下文，模型每一轮请求都能看到。来自 `advisor.ts` 的固定字符串：
 
 | 内容 | 来源字段 | 大约 token |
 |---|---|---|
@@ -142,7 +164,7 @@ pi remove npm:pi-extension-subagent   # 卸载
 
 ### 手动复制（不推荐）
 
-把 `index.ts` 放入 `~/.pi/agent/extensions/`（自动发现），重启或 `/reload` 后生效。这个包只依赖 pi 内置的 typebox（`typebox` 与 pi 核心包都是内置的 peer dependency），所以单文件复制也能跑；但如果之后引入了外部依赖，手动复制会漏装依赖，建议优先用 `pi install`。
+把 `index.ts` 和 `advisor.ts` 一起放入 `~/.pi/agent/extensions/`（自动发现），重启或 `/reload` 后生效。这些文件只依赖 pi 内置的包（`typebox`、`@earendil-works/pi-tui` 与 pi 核心包都是内置的 peer dependency），所以直接复制也能跑；但如果之后引入了外部依赖，手动复制会漏装依赖，建议优先用 `pi install`。
 
 ## 开发
 
