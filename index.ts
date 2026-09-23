@@ -6,12 +6,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-	ADVISOR_SYSTEM_PROMPT,
-	ADVISOR_TOOLS,
+	advisorPresetFlags,
 	buildAdvisorBrief,
 	notifyAdvisorMissingModel,
 	resolveAdvisor,
 	setupAdvisor,
+	shQuote,
 } from "./advisor";
 
 const SOCKET = "pi-sub";
@@ -33,10 +33,6 @@ function shortId(): string {
 	let id = "";
 	for (let i = 0; i < 4; i++) id += ID_ALPHABET[randomInt(ID_ALPHABET.length)];
 	return id;
-}
-
-function shQuote(s: string): string {
-	return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 /** 通用进程运行器：收集 stdout/stderr */
@@ -85,6 +81,214 @@ ${completion}
 - tmux 命令永远带 -L ${SOCKET}（专用 socket）；禁止对默认 tmux server 执行任何 kill 操作`;
 }
 
+/**
+ * watchdog 收尾路径是否可用：/watchdog 命令由 pi-watchdog 无条件注册，代表扩展已
+ * 加载（是否运行无关紧要——子 agent 的开启由本扩展注入 PI_WATCHDOG 决定，加载即
+ * 开启）。主会话与子 agent 共享同一份扩展配置（全局 packages + 同 cwd），主会话
+ * 探测到 = 子 agent 里也有。探测放在 spawn/advisor 调用时而非扩展加载时：加载期
+ * 各扩展的注册时序不保证。按 source === "extension" 匹配，避免同名 skill/prompt
+ * 模板误判。未加载时回退 pi -p 批处理路径（见 resolveCompletion 的说明）。
+ */
+function isWatchdogAvailable(pi: ExtensionAPI): boolean {
+	return pi.getCommands().some((c) => c.name === "watchdog" && c.source === "extension");
+}
+
+// ---------- 子 agent 的路径布局 ----------
+
+/** 子 agent 的会话名与运行时文件布局：/tmp/pi-sub-<session>/ 下 brief、交付物、exit、log */
+interface SubagentPaths {
+	/** tmux 会话名（kebab 化任务名 + 随机后缀），也是 done 频道与运行目录的前缀 */
+	session: string;
+	/** wait-for 完成信号频道名 */
+	done: string;
+	dir: string;
+	briefPath: string;
+	artifactPath: string;
+	exitFile: string;
+	logPath: string;
+}
+
+function resolvePaths(session: string): SubagentPaths {
+	const dir = join("/tmp", `pi-sub-${session}`);
+	return {
+		session,
+		done: `${session}-done`,
+		dir,
+		briefPath: join(dir, "brief.md"),
+		artifactPath: join(dir, "result.md"),
+		exitFile: join(dir, "exit"),
+		logPath: join(dir, "log"),
+	};
+}
+
+// ---------- 完成协议：两条收尾路径的差异收敛 ----------
+
+/**
+ * 收尾路径画像：把 launchSub 里所有按 watchdog 是否加载而分支的差异点收敛成一份
+ * 记录，launchSub 主体只读字段、不再散布三元判断。
+ *
+ * 完成协议按 watchdog 是否加载分两路：
+ * - watchdog 路径（默认）：交互式 pi + mode=keep 常驻监控。AI 调用 stop_watchdog
+ *   停止监控时，由 ON_STOP 钩子（不经 LLM 再跑一轮 bash，无 API 故障风险）先把 0
+ *   写入 exit 文件（pi 此刻仍在运行，先写 0 让等待方在信号时刻读到「正常完成」，
+ *   不会把 exit 缺失误判为崩溃），发完成信号，然后关闭 tmux 会话：pi 收到 SIGHUP
+ *   走优雅退出；pane shell 与 pi 同进程组、默认死于 SIGHUP，抢不到机会把真实
+ *   退出码写进 exit 覆盖预写的 0（且 pi 优雅退出码本就是 0，双保险）。sleep 0.3
+ *   给 pi 收尾余量；即使 ON_STOP 中途失败，pane-died hook 仍兜底发信号。
+ * - pi -p 回退（watchdog 未加载，如未安装/被禁用）：跑完一个回合进程即退出，
+ *   真实退出码由 pane shell 写入 exit 文件，输出重定向到 log；不注入 watchdog
+ *   环境变量。pi 会话默认保存（不加 --no-session），pane 命令链结束后会话随
+ *   之自动关闭，回看执行过程读会话 jsonl。pane 内不加 timeout：macOS 无此命令
+ *   （GNU coreutils 专属，exit 127 秒死——踩过）。挂死防护交给人工围观。
+ * 两条路都靠 pane-died hook 兜底：崩溃/被杀时信号照发，exit 缺失 → 等待方
+ * 识别为异常终止。主进程不等待：new-session -d 创建会话即返回；等待发生在
+ * 后台 pane 内，主进程靠 wait-for done 事件驱动感知完成，再读 exit 判成败。
+ */
+interface CompletionProfile {
+	/** "watchdog" = 交互式 pi + stop_watchdog 收尾；"batch" = pi -p 批处理回退 */
+	kind: "watchdog" | "batch";
+	/** pi 启动命令前缀（不含 flags 与任务 prompt）：交互式为 "pi"，批处理为 "pi -p" */
+	piCommandPrefix: "pi" | "pi -p";
+	/** 追加在任务 prompt 之后的输出重定向（批处理重定向到 log；交互式无） */
+	outputRedirect: string;
+	/** watchdog 专属的 tmux -e 环境注入（已插值；批处理路径为空数组） */
+	extraEnvArgs: string[];
+	/** pane-died hook 注册失败时是否回收会话并按失败返回（批处理唯一信号来源是该 hook，必须回滚） */
+	rollbackOnHookFailure: boolean;
+	/** exit 文件判读说明（进 LLM 上下文） */
+	exitNote: string;
+}
+
+function resolveCompletion(useWatchdog: boolean, paths: SubagentPaths): CompletionProfile {
+	if (useWatchdog) {
+		return {
+			kind: "watchdog",
+			piCommandPrefix: "pi",
+			outputRedirect: "",
+			extraEnvArgs: [
+				"-e",
+				"PI_WATCHDOG=timeout=5 max=50 mode=keep",
+				// ON_STOP 钩子是一条完整 shell 命令链：写 0 → 发完成信号 → 稍候关会话
+				"-e",
+				`PI_WATCHDOG_ON_STOP=echo 0 > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
+			],
+			rollbackOnHookFailure: false,
+			exitNote: "exit 文件为 0 = 正常收尾；非 0 或缺失 = 失败/异常终止。",
+		};
+	}
+	return {
+		kind: "batch",
+		piCommandPrefix: "pi -p",
+		outputRedirect: ` > ${paths.logPath} 2>&1`,
+		extraEnvArgs: [],
+		rollbackOnHookFailure: true,
+		exitNote: "子 agent 为 pi -p 批处理模式：exit 文件 0 = 成功，非 0 = 失败，缺失 = 崩溃/被杀。",
+	};
+}
+
+/**
+ * 两条收尾路径共用的 tmux -e 环境注入（watchdog 专属的见 resolveCompletion）。
+ * 经 tmux -e 注入会话环境：pane 里的 pi 能读到，不出现在启动命令字符串里。
+ */
+function baseEnvArgs(paths: SubagentPaths): string[] {
+	return [
+		// 两条路都注入：子 agent 内禁注册 spawn_sub（防嵌套）。
+		"-e",
+		"PI_SUBAGENT=1",
+		// 两条路都注入：子 agent 自检失败时（watchdog 缺位）写 exit 并发完成信号，
+		// 让等待方快速失败而不是静默挂死
+		"-e",
+		`PI_SUB_EXIT_FILE=${paths.exitFile}`,
+		"-e",
+		`PI_SUB_DONE=${paths.done}`,
+	];
+}
+
+/**
+ * pane 内执行的完整命令链。子 agent 的启动 prompt 只剩一个位置参数（普通 prompt
+ * 路径，完整 await）；位置参数保证 -p 模式完整等待回合结束（命令处理器里的
+ * sendUserMessage 是 fire-and-forget，-p 会在后台回合开始前退出——已踩坑）。
+ */
+function buildPaneCommand(completion: CompletionProfile, flags: string[], paths: SubagentPaths): string {
+	const briefTask = shQuote(`Read the brief at ${paths.briefPath} and execute it fully.`);
+	const piCommand = `${completion.piCommandPrefix} ${flags.join(" ")} ${briefTask}${completion.outputRedirect}`;
+	return `${piCommand}; echo $? > ${paths.exitFile}`;
+}
+
+/**
+ * 同名会话兜底检查：会话名带随机后缀，正常情况下不会命中；兜底场景仍不重复拉起，
+ * 报告现状让用户决定。返回错误文案（命中）；undefined = 可以启动。
+ */
+async function existingSessionReport(session: string): Promise<string | undefined> {
+	const has = await runTmux(["has-session", "-t", session]);
+	if (has.code !== 0) return undefined;
+	const ls = await runTmux(["ls"]);
+	return `会话 ${session} 已存在，未重复启动。\n当前 ${SOCKET} socket 上的会话：\n${ls.stdout || ls.stderr}`;
+}
+
+/**
+ * 建运行目录并写简报（权限仅属主可读）。上次同名任务残留的退出码会污染本次成败
+ * 判定，启动前清掉。
+ */
+function prepareRunDir(paths: SubagentPaths, brief: string): void {
+	mkdirSync(paths.dir, { recursive: true });
+	writeFileSync(paths.briefPath, brief, { mode: 0o600 });
+	try {
+		rmSync(paths.exitFile, { force: true });
+	} catch {
+		/* ignore */
+	}
+}
+
+/**
+ * pane 进程退出（正常收尾/崩溃/被杀）时自动发完成信号——不依赖子 agent 的 LLM，
+ * 主会话因此无需轮询即可感知失败。会话名含随机后缀，并发任务各占独立 done 频道，
+ * 不会互相串信号；done 频道名只含字母数字与连字符，单引号内联安全。
+ * 返回失败原因（已 trim），注册成功返回 undefined。
+ */
+async function registerPaneDiedHook(paths: SubagentPaths): Promise<string | undefined> {
+	const hook = await runTmux([
+		"set-hook",
+		"-t",
+		paths.session,
+		"pane-died",
+		`run-shell -b 'TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done}'`,
+	]);
+	if (hook.code === 0) return undefined;
+	return (hook.stderr || hook.stdout).trim();
+}
+
+/**
+ * 给主会话 LLM 的等待/读取结论说明。等待命令带 timeout 防挂死；timeout 命中后
+ * 重发即可（信号会被记住，见 wait-for 语义）；连续多次 timeout 且会话仍在时
+ * capture-pane 看现场，有界重试——覆盖「LLM 忘调 stop_watchdog / watchdog max
+ * 催促耗尽 / watchdog 未接管」等信号永不来的场景。
+ *
+ * wait-for 语义（实测 0.85.1 自带 tmux）：-S 发出的信号会被 server 记住，稍后的
+ * wait-for 立即返回，不存在「信号在等待空窗期被丢弃后重发永久阻塞」的问题。
+ * timeout 命中后可以直接重发 wait-for 继续等。但等待必须有界：信号可能根本不会来
+ * （子 agent LLM 未调 stop_watchdog、watchdog max 催促耗尽后直接 teardown 不发
+ * ON_STOP、watchdog 未接管等），连续多次 timeout 且会话仍在时 capture-pane 看现场
+ * 再决定等还是处置——等待方挂起比等待方超时更糟。
+ */
+function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
+	return `需要结论时在 bash 执行 tmux -L ${SOCKET} wait-for ${paths.done}，必须用 bash 的 timeout 参数限时（建议 600s，阻塞等待零 token）。timeout 命中后重发本命令继续等即可（tmux 会记住已发的信号，不会永久阻塞）。若连续 2-3 次 timeout 且 \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` 显示会话仍在：执行 \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等、kill-session 后按失败处理。返回后 read ${paths.artifactPath}。${exitNote}`;
+}
+
+/** 启动成功的结果组装：速查表只给用户（放 details，经 renderResult 渲染，不进 LLM 上下文），等待说明进 LLM 上下文 */
+function startedResult(paths: SubagentPaths, completion: CompletionProfile): LaunchResult {
+	return {
+		ok: true,
+		text: `已启动子 agent（交付物：${paths.artifactPath}）。${buildMainAgentNote(paths, completion.exitNote)}`,
+		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done),
+		session: paths.session,
+		artifactPath: paths.artifactPath,
+		exitFile: paths.exitFile,
+		done: paths.done,
+		logPath: paths.logPath,
+	};
+}
+
 interface LaunchOpts {
 	/** "advisor" 用咨询简报模板 + 限制工具集 + 换系统提示词；缺省 = 任务模式 */
 	mode?: "advisor";
@@ -117,183 +321,72 @@ async function launchSub(
 	if (!question.trim()) {
 		return { ok: false, text: "缺少任务描述（question）。" };
 	}
-	// watchdog 收尾路径是否可用：/watchdog 命令由 pi-watchdog 无条件注册，代表扩展已
-	// 加载（是否运行无关紧要——子 agent 的开启由本扩展注入 PI_WATCHDOG 决定，加载即
-	// 开启）。主会话与子 agent 共享同一份扩展配置（全局 packages + 同 cwd），主会话
-	// 探测到 = 子 agent 里也有。探测放在 spawn/advisor 调用时而非扩展加载时：加载期
-	// 各扩展的注册时序不保证。按 source === "extension" 匹配，避免同名 skill/prompt
-	// 模板误判。未加载时回退 pi -p 批处理路径（见 inner 的组装说明）。
-	const useWatchdog = pi.getCommands().some((c) => c.name === "watchdog" && c.source === "extension");
-	const session = `${kebab(question)}-${shortId()}`;
-	const name = session;
-	const done = `${session}-done`;
-	const dir = join("/tmp", `pi-sub-${name}`);
-	const briefPath = join(dir, "brief.md");
-	const artifactPath = join(dir, "result.md");
-	const exitFile = join(dir, "exit");
-	const logPath = join(dir, "log");
 
-	// 会话名带随机后缀，正常情况下不会命中；兜底场景
-	// 仍不重复拉起，报告现状让用户决定
-	const has = await runTmux(["has-session", "-t", session]);
-	if (has.code === 0) {
-		const ls = await runTmux(["ls"]);
-		return {
-			ok: false,
-			text: `会话 ${session} 已存在，未重复启动。\n当前 ${SOCKET} socket 上的会话：\n${ls.stdout || ls.stderr}`,
-		};
+	const useWatchdog = isWatchdogAvailable(pi);
+	const paths = resolvePaths(`${kebab(question)}-${shortId()}`);
+	const completion = resolveCompletion(useWatchdog, paths);
+
+	const clash = await existingSessionReport(paths.session);
+	if (clash) {
+		return { ok: false, text: clash };
 	}
 
-	mkdirSync(dir, { recursive: true });
 	const brief =
 		opts?.mode === "advisor"
-			? buildAdvisorBrief(question, context, artifactPath, useWatchdog)
-			: buildBrief(question, context, artifactPath, useWatchdog);
-	writeFileSync(briefPath, brief, { mode: 0o600 });
-	// 上次同名任务残留的退出码会污染本次成败判定，启动前清掉
-	try {
-		rmSync(exitFile, { force: true });
-	} catch {
-		/* ignore */
-	}
+			? buildAdvisorBrief(question, context, paths.artifactPath, useWatchdog)
+			: buildBrief(question, context, paths.artifactPath, useWatchdog);
+	prepareRunDir(paths, brief);
 
-	// 子 agent 的启动 prompt 只剩一个位置参数（普通 prompt 路径，完整 await）。
-	// 位置参数保证 -p 模式完整等待回合结束（命令处理器里的 sendUserMessage 是
-	// fire-and-forget，-p 会在后台回合开始前退出——已踩坑）。
-	const briefTask = shQuote(`Read the brief at ${briefPath} and execute it fully.`);
-	// 完成协议按 watchdog 是否加载分两路：
-	// - watchdog 路径（默认）：交互式 pi + mode=keep 常驻监控。AI 调用 stop_watchdog
-	//   停止监控时，由 ON_STOP 钩子（不经 LLM 再跑一轮 bash，无 API 故障风险）先把 0
-	//   写入 exit 文件（pi 此刻仍在运行，先写 0 让等待方在信号时刻读到「正常完成」，
-	//   不会把 exit 缺失误判为崩溃），发完成信号，然后关闭 tmux 会话：pi 收到 SIGHUP
-	//   走优雅退出；pane shell 与 pi 同进程组、默认死于 SIGHUP，抢不到机会把真实
-	//   退出码写进 exit 覆盖预写的 0（且 pi 优雅退出码本就是 0，双保险）。sleep 0.3
-	//   给 pi 收尾余量；即使 ON_STOP 中途失败，pane-died hook 仍兜底发信号。
-	// - pi -p 回退（watchdog 未加载，如未安装/被禁用）：跑完一个回合进程即退出，
-	//   真实退出码由 pane shell 写入 exit 文件，输出重定向到 log；不注入 watchdog
-	//   环境变量。pi 会话默认保存（不加 --no-session），pane 命令链结束后会话随
-	//   之自动关闭，回看执行过程读会话 jsonl。pane 内不加 timeout：macOS 无此命令
-	//   （GNU coreutils 专属，exit 127 秒死——踩过）。挂死防护交给人工围观。
-	// 两条路都靠 pane-died hook 兜底：崩溃/被杀时信号照发，exit 缺失 → 等待方
-	// 识别为异常终止。主进程不等待：new-session -d 创建会话即返回；等待发生在
-	// 后台 pane 内，主进程靠 wait-for done 事件驱动感知完成，再读 exit 判成败。
-	// wait-for 语义（实测 0.85.1 自带 tmux）：-S 发出的信号会被 server 记住，稍后的
-	// wait-for 立即返回，不存在「信号在等待空窗期被丢弃后重发永久阻塞」的问题。
-	// timeout 命中后可以直接重发 wait-for 继续等。但等待必须有界：信号可能根本不会来
-	// （子 agent LLM 未调 stop_watchdog、watchdog max 催促耗尽后直接 teardown 不发
-	// ON_STOP、watchdog 未接管等），连续多次 timeout 且会话仍在时 capture-pane 看现场
-	// 再决定等还是处置——等待方挂起比等待方超时更糟。
-	// 模式预设 flag 在前（advisor 模式限制工具集、换 advisor 人格提示词），
-	// 调用方的 extraArgs 在后：pi 的参数解析对 --model/--tools/--system-prompt
-	// 这类单值 flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
-	// -p 回退下 stop_watchdog 不存在（未注入 PI_WATCHDOG），从 advisor 工具集中
-	// 滤掉；即使忘了滤，--tools 对未知工具名也会忽略，无害。
-	const advisorTools = useWatchdog ? ADVISOR_TOOLS : ADVISOR_TOOLS.filter((t) => t !== "stop_watchdog");
-	const flags: string[] =
-		opts?.mode === "advisor"
-			? ["--tools", shQuote(advisorTools.join(",")), "--system-prompt", shQuote(ADVISOR_SYSTEM_PROMPT)]
-			: [];
-	if (opts?.extraArgs?.length) flags.push(...opts.extraArgs);
-	const piCmd = useWatchdog
-		? `pi ${flags.join(" ")} ${briefTask}`
-		: `pi -p ${flags.join(" ")} ${briefTask} > ${logPath} 2>&1`;
-	const inner = `${piCmd}; echo $? > ${exitFile}`;
-
-	// watchdog 经 tmux -e 注入会话环境：pane 里的 pi 能读到，不出现在启动命令字符串里。
-	// PI_SUBAGENT 两条路都注入：子 agent 内禁注册 spawn_sub（防嵌套）。
-	const envArgs = [
-		"-e",
-		"PI_SUBAGENT=1",
-		// 两条路都注入：子 agent 自检失败时（watchdog 缺位）写 exit 并发完成信号，
-		// 让等待方快速失败而不是静默挂死
-		"-e",
-		`PI_SUB_EXIT_FILE=${exitFile}`,
-		"-e",
-		`PI_SUB_DONE=${done}`,
-		...(useWatchdog
-			? [
-					"-e",
-					"PI_WATCHDOG=timeout=5 max=50 mode=keep",
-					"-e",
-					`PI_WATCHDOG_ON_STOP=echo 0 > ${exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${session}`,
-				]
-			: []),
+	// 模式预设 flag 在前（advisor 模式限制工具集、换 advisor 人格提示词，见 advisor.ts
+	// 的 advisorPresetFlags），调用方的 extraArgs 在后：pi 的参数解析对
+	// --model/--tools/--system-prompt 这类单值 flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
+	const flags: string[] = [
+		...(opts?.mode === "advisor" ? advisorPresetFlags(useWatchdog) : []),
+		...(opts?.extraArgs ?? []),
 	];
+
 	// 注意：-e 是 new-session 命令的参数，必须跟在 new-session 后面；
 	// 放在 tmux 全局选项位置会报 "unknown option -- e"
-	const launch = await runTmux(["new-session", ...envArgs, "-d", "-s", session, "-x", "220", "-y", "50", inner]);
+	const launch = await runTmux([
+		"new-session",
+		...baseEnvArgs(paths),
+		...completion.extraEnvArgs,
+		"-d",
+		"-s",
+		paths.session,
+		"-x",
+		"220",
+		"-y",
+		"50",
+		buildPaneCommand(completion, flags, paths),
+	]);
 	if (launch.code !== 0) {
 		return { ok: false, text: `tmux 启动失败：${launch.stderr || launch.stdout}` };
 	}
 
-	// pane 进程退出（正常收尾/崩溃/被杀）时自动发完成信号——不依赖子 agent 的 LLM，
-	// 主会话因此无需轮询即可感知失败。会话名含随机后缀，并发任务各占独立 done 频道，
-	// 不会互相串信号；done 频道名只含字母数字与连字符，单引号内联安全。
-	const hook = await runTmux([
-		"set-hook",
-		"-t",
-		session,
-		"pane-died",
-		`run-shell -b 'TMUX= tmux -L ${SOCKET} wait-for -S ${done}'`,
-	]);
-	if (hook.code !== 0) {
-		if (!useWatchdog) {
+	const hookError = await registerPaneDiedHook(paths);
+	if (hookError) {
+		if (completion.rollbackOnHookFailure) {
 			// -p 回退唯一信号来源是 pane-died hook（brief 不要求 LLM 发信号），缺失必须回滚
-			await runTmux(["kill-session", "-t", session]);
+			await runTmux(["kill-session", "-t", paths.session]);
 			return {
 				ok: false,
-				text: `注册 pane-died hook 失败（${(hook.stderr || hook.stdout).trim()}），已回收会话；完成信号无法保证送达，未启动子 agent。`,
+				text: `注册 pane-died hook 失败（${hookError}），已回收会话；完成信号无法保证送达，未启动子 agent。`,
 			};
 		}
 		// watchdog 路径不回滚：ON_STOP 钩子仍会发信号，只是失去崩溃兜底
 		return {
 			ok: true,
-			text: `已启动子 agent，但注册 pane-died hook 失败（${(hook.stderr || hook.stdout).trim()}）：进程崩溃时不再自动发完成信号，需人工围观或超时排查。交付物：${artifactPath}`,
-			session,
-			artifactPath,
-			exitFile,
-			done,
-			logPath,
+			text: `已启动子 agent，但注册 pane-died hook 失败（${hookError}）：进程崩溃时不再自动发完成信号，需人工围观或超时排查。交付物：${paths.artifactPath}`,
+			session: paths.session,
+			artifactPath: paths.artifactPath,
+			exitFile: paths.exitFile,
+			done: paths.done,
+			logPath: paths.logPath,
 		};
 	}
 
-	// 速查表只给用户：放 details，经 renderResult 渲染，不进 LLM 上下文
-	const ops = opsCheatsheet(session, artifactPath, exitFile, done);
-
-	// LLM 只需要等待/读取结论的最小说明：等待命令带 timeout 防挂死；timeout 命中后
-	// 重发即可（信号会被记住，见上方 wait-for 语义注释）；连续多次 timeout 且会话仍在
-	// 时 capture-pane 看现场，有界重试——覆盖「LLM 忘调 stop_watchdog / watchdog max
-	// 催促耗尽 / watchdog 未接管」等信号永不来的场景。
-	const exitNote = useWatchdog
-		? "exit 文件为 0 = 正常收尾；非 0 或缺失 = 失败/异常终止。"
-		: "子 agent 为 pi -p 批处理模式：exit 文件 0 = 成功，非 0 = 失败，缺失 = 崩溃/被杀。";
-	const mainAgentNote = [
-		"需要结论时在 bash 执行 " +
-			`tmux -L ${SOCKET} wait-for ${done}` +
-			"，必须用 bash 的 timeout 参数限时（建议 600s，阻塞等待零 token）",
-		"。timeout 命中后重发本命令继续等即可（tmux 会记住已发的信号，不会永久阻塞）。" +
-			"若连续 2-3 次 timeout 且 `TMUX= tmux -L " +
-			SOCKET +
-			" has-session -t " +
-			`${session}` +
-			"` 显示会话仍在：执行 `tmux -L " +
-			SOCKET +
-			" capture-pane -t " +
-			`${session}` +
-			" -p | tail -30` 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等、kill-session 后按失败处理",
-		`。返回后 read ${artifactPath}。${exitNote}`,
-	].join("");
-
-	return {
-		ok: true,
-		text: `已启动子 agent（交付物：${artifactPath}）。${mainAgentNote}`,
-		ops,
-		session,
-		artifactPath,
-		exitFile,
-		done,
-		logPath,
-	};
+	return startedResult(paths, completion);
 }
 
 /** 常用运维命令速查：attach 围观 / 看进度 / 读交付物 / 等完成 / 杀会话，全部可直接复制粘贴 */
@@ -332,15 +425,14 @@ export default async function (pi: ExtensionAPI) {
 	// 子 agent pane 内（启动时经 tmux -e 注入 PI_SUBAGENT=1）不再注册 spawn_sub，
 	// 从机制上禁止嵌套委派，替代原先的 promptGuidelines 软约束。
 	if (process.env.PI_SUBAGENT === "1") {
-		// 自检（放到 session_start：此时各扩展已加载完，/watchdog 的注册时序不再有假阴性；
-		// 与 launchSub 的探测一样按 source === "extension" 匹配）。
+		// 自检（放到 session_start：此时各扩展已加载完，/watchdog 的注册时序不再有假阴性）。
 		// 注入了 PI_WATCHDOG 却找不到 watchdog 扩展 = 交互式收尾机制缺位：任务做完 pi
 		// 不会退出、不发完成信号，tmux 会话将永久残留。此时尽快失败暴露：写非 0 exit
 		// 并直接发完成信号，让等待方立刻读到明确失败（宁可误判失败，不要静默挂死）。
 		// pi -p 回退路径不注入 PI_WATCHDOG，天然不触发本分支。
 		if (process.env.PI_WATCHDOG) {
 			pi.on("session_start", async (_event, ctx) => {
-				if (pi.getCommands().some((c) => c.name === "watchdog" && c.source === "extension")) return;
+				if (isWatchdogAvailable(pi)) return;
 				ctx.ui.notify(
 					"子 agent 异常：注入了 PI_WATCHDOG 但 watchdog 扩展未加载，无法自动收尾。已标记本次委派失败（exit=97）并通知等待方，建议主会话改用 -p 回退路径重试",
 					"warning",

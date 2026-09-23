@@ -74,6 +74,21 @@ Rules:
 - Be concise and directive. No preamble, no apologies, no meta-commentary — just the guidance.
 - Deliverable protocol (from your brief): write your full guidance to the result.md path given there.`;
 
+/** shell 单引号安全包装：内联进 tmux run-shell 等命令串时防注入/断词 */
+export function shQuote(s: string): string {
+	return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * advisor 模式下子 agent pi 的预设 flag（放在启动参数最前面）：限制工具集 + 换 advisor
+ * 人格系统提示词。-p 回退路径下 stop_watchdog 不存在（未注入 PI_WATCHDOG），从工具集
+ * 中滤掉；即使忘了滤，--tools 对未知工具名也会忽略，无害。
+ */
+export function advisorPresetFlags(useWatchdog: boolean): string[] {
+	const tools = useWatchdog ? ADVISOR_TOOLS : ADVISOR_TOOLS.filter((t) => t !== "stop_watchdog");
+	return ["--tools", shQuote(tools.join(",")), "--system-prompt", shQuote(ADVISOR_SYSTEM_PROMPT)];
+}
+
 /** advisor 模式的 brief 模板：只求判断，不求执行。useWatchdog = 收尾走 stop_watchdog（false 时 pi -p 跑完自动退出） */
 export function buildAdvisorBrief(
 	question: string,
