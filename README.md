@@ -20,35 +20,53 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
   ├── brief.md    主会话启动前生成：任务目标 + 从主会话蒸馏出的背景 + 工具使用策略
   │               + 交付物要求 + 行为边界
   ├── result.md   子 agent 写的交付物。等待方以 exit 文件判断这次委派成败
-  ├── exit        子 agent 的退出码，由 pane 里的 shell 写入：0 = 正常收尾；
-  │               非 0 = 失败；文件不存在 = 进程被强杀或崩溃
-  └── log         子 agent 的 stdout 日志（交互式 pi 的 TUI 输出，主要用于排查）
+  ├── exit        子 agent 的退出码：0 = 正常收尾；非 0 = 失败；
+  │               文件不存在 = 进程被强杀或崩溃（watchdog 路径由 ON_STOP 预写 0，
+  │               -p 路径由 pane shell 写入 pi 的真实退出码）
+  └── log         子 agent 的输出日志（仅 -p 回退路径写入，批处理运行输出，用于
+                  排查；watchdog 路径的画面在 tmux pane 里，回看读会话 jsonl）
 ```
 
 ### 启动与收尾流程
 
-全部用 tmux 自带功能，扩展本身不做额外魔法：
+全部用 tmux 自带功能，扩展本身不做额外魔法。收尾机制按 **watchdog 扩展是否加载**分两路
+（launchSub 时用 `pi.getCommands()` 探测 `/watchdog` 命令：主会话与子 agent 共享同一份
+扩展配置，主会话探测到 = 子 agent 里也有；子 agent 的开启由本扩展注入 PI_WATCHDOG 决定，
+加载即开启）。注意：探测假设 pi-watchdog 是经全局 packages 或项目配置安装的；如果主会话
+是用 `pi -e` 临时挂载 watchdog 启动的，子 agent（裸 `pi` 启动）加载不到它——这种场景下
+子 agent 内的自检会立刻写非 0 exit（97）并发完成信号，让等待方快速失败，而不是静默挂死。
 
 1. 用 tmux 新开一个后台 session 运行子 agent：
 
    ```bash
-   TMUX= tmux -L pi-sub -e PI_WATCHDOG=… [-e PI_WATCHDOG_ON_STOP=…] new-session -d \
+   # watchdog 路径（默认，watchdog 已加载）
+   TMUX= tmux -L pi-sub -e PI_SUBAGENT=1 -e PI_WATCHDOG=… [-e PI_WATCHDOG_ON_STOP=…] new-session -d \
      'pi "Read the brief at …" ; echo $? > exit'
+
+   # -p 回退路径（watchdog 未安装或被禁用）
+   TMUX= tmux -L pi-sub -e PI_SUBAGENT=1 new-session -d \
+     'pi -p "Read the brief at …" > log 2>&1 ; echo $? > exit'
    ```
 
-   - 子 agent 用交互式 pi 启动，任务做完不会自己退出进程，所以额外注入 ON_STOP
-     钩子：子 agent 调用 `stop_watchdog` 停止监控时，由扩展本地直接把退出码 0 写进 exit 文件，
-     再用 wait-for 发完成信号。这样不需要子 agent 再跑一轮 bash 命令（之前试过，遇到 API 429
-     故障时等待方会永久挂起，踩过坑）。
+   - **watchdog 路径**：子 agent 用交互式 pi 启动（任务做完不会自己退出进程），额外注入
+     ON_STOP 钩子：子 agent 调用 `stop_watchdog` 停止监控时，由扩展本地依次：把退出码 0
+     写进 exit 文件（pi 此刻仍在运行，先写 0 让等待方在信号时刻读到「正常完成」，不会把
+     exit 缺失误判为崩溃）→ 用 wait-for 发完成信号 → 关闭 tmux 会话（pi 收到 SIGHUP
+     走优雅退出，pane shell 一并死掉，抢不到机会用真实退出码覆盖预写的 0）。这样不需要
+     子 agent 再跑一轮 bash 命令（之前试过，遇到 API 429 故障时等待方会永久挂起，踩过坑）。
+   - **-p 回退路径**：`pi -p` 跑完这一个回合进程就退出（pane 命令链结束、会话随之自动
+     关闭），真实退出码由 pane shell 写入 exit 文件；不需要 ON_STOP 钩子，也不注入
+     watchdog 环境变量。advisor 模式下 `stop_watchdog` 会从 `--tools` 里滤掉，
+     brief/system prompt 相应收尾文案换成「写完即结束」。pi 会话默认保存，可回看。
 
-2. 再注册一个 pane-died 钩子兜底：子 agent 进程异常退出（崩溃/被杀）时也发完成信号。等待方
-   发现 exit 文件缺失，就能识别出这是异常终止。
+2. 两条路都再注册一个 pane-died 钩子兜底：子 agent 进程异常退出（崩溃/被杀）时也发完成
+   信号。等待方发现 exit 文件缺失，就能识别出这是异常终止。
 
 3. 主会话用 `tmux wait-for` 阻塞等待完成信号（零 token 消耗），完成后 read result.md。
 
 ### 注意事项
 
-- **查看子 agent 的执行过程**：委派完成后子 agent 进程会关闭，tmux 会话随之消失，主会话连不上去。如果想回看它做了什么，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。
+- **查看子 agent 的执行过程**：两条路径下任务完成后会话都会自动关闭（watchdog 路径由 stop_watchdog 触发，-p 路径随进程退出）。想回看它做了什么，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。运行期间可以 attach 围观（`Ctrl-b d` 退出）。
 - **沙盒环境下的嵌套**：如果主会话的 pi 是在沙盒（如 SRT 限制）里启动的，子 agent 继承同样的环境，也会受沙盒限制（例如无法写 `~`、无法访问网络等）。
 
 ### 嵌套
@@ -111,16 +129,21 @@ timeout 的取值逻辑要兼顾两边：
 - 但 timeout 命中后的「判读 + 重等」是一个完整的 tool call 回合：命令文本和结果说明都要进上下文、走一次 API 请求。单次很便宜（几十 token），重试太频繁就把「等待零 token」的优势磨掉了。
 - 所以取适中值：600s 够覆盖典型任务（减少重试次数），又在挂死时不会把主会话卡死太久。超大 timeout（如 1800s+）只是把异常恢复推后，没有收益。
 
-另外，timeout 命中后**不能简单地重发 wait-for**：完成信号可能恰好在等待空窗期已发出并被丢弃，重发会永久阻塞。正确判读以会话状态为准：
+另外，timeout 命中后**直接重发 wait-for 即可**：tmux 会记住已发出的信号（无等待者时
+`-S` 发出的信号不会丢失，稍后的 `wait-for` 立即返回，已实测验证），不会因错过窗口期而永久阻塞。
+
+但等待必须有界：信号可能根本不会来——比如子 agent LLM 没调 `stop_watchdog`、watchdog 催促
+次数（`max=50`）耗尽后自动停止监控、或 watchdog 未接管。连续 2–3 次 timeout 且会话仍在时，
+先看现场再决定：
 
 ```bash
-TMUX= tmux -L pi-sub has-session -t <会话名>
+TMUX= tmux -L pi-sub capture-pane -t <会话名> -p | tail -30
 ```
 
-- 会话已消失 = 子 agent 已结束（信号被错过了），直接读 exit/result 判成败；
-- 会话还在 = 确实没跑完，再执行一次 wait-for（继续带 timeout）。
+- 子 agent 还在正常工作 → 继续等；
+- 已挂死/无进展 → `tmux -L pi-sub kill-session -t <会话名>` 回收，按 exit 文件缺失判失败。
 
-这样 timeout 只是一次安全的状态检查，循环下去总能收敛，信号丢失无后患。
+循环下去要么等到信号，要么人工处置，不会无限阻塞。
 
 ### 完成阶段：读回交付物是唯一的大额回流
 
