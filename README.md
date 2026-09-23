@@ -187,7 +187,7 @@ pi remove npm:pi-extension-subagent   # 卸载
 
 ### 手动复制（不推荐）
 
-把 `index.ts` 和 `advisor.ts` 一起放入 `~/.pi/agent/extensions/`（自动发现），重启或 `/reload` 后生效。这些文件只依赖 pi 内置的包（`typebox`、`@earendil-works/pi-tui` 与 pi 核心包都是内置的 peer dependency），所以直接复制也能跑；但如果之后引入了外部依赖，手动复制会漏装依赖，建议优先用 `pi install`。
+把本包的全部 `.ts` 文件（`index.ts`、`advisor.ts`、`launch.ts`、`completion.ts`、`brief.ts`、`paths.ts`、`tmux.ts`、`selfcheck.ts`）一起放入 `~/.pi/agent/extensions/`（自动发现），重启或 `/reload` 后生效。这些文件只依赖 pi 内置的包（`typebox`、`@earendil-works/pi-tui` 与 pi 核心包都是内置的 peer dependency），所以直接复制也能跑；但如果之后引入了外部依赖，手动复制会漏装依赖，建议优先用 `pi install`。
 
 ## 开发
 
