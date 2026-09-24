@@ -2,9 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { shQuote } from "./tmux";
+import { runTmux, shQuote } from "./tmux";
 
 // ---------- advisor 配置（可选功能：默认关闭，显式配置才注册工具） ----------
 
@@ -114,6 +115,124 @@ ${context?.trim() || "（无）"}
 - 你的工具只有 ${tools}，这是设计使然：你负责判断，执行属于主会话`;
 }
 
+// ---------- 顾问内容的纯显示输出（appendEntry：不进 LLM 上下文） ----------
+
+interface AdvisorEntryData {
+	label: string;
+	body: string;
+	note?: string;
+}
+
+/**
+ * advisor 简报/回复的 entry 渲染器：默认折叠为一行摘要，ctrl+o（app.tools.expand）
+ * 展开为完整 Markdown。数据经 pi.appendEntry 写入（不参与 LLM 上下文），
+ * 会话恢复后也能重渲染。
+ */
+function renderAdvisorEntry(
+	entry: { data?: unknown },
+	options: { expanded: boolean },
+	theme: Parameters<Parameters<ExtensionAPI["registerEntryRenderer"]>[1]>[2],
+) {
+	const d = (entry.data ?? {}) as Partial<AdvisorEntryData>;
+	const body = d.body ?? "";
+	const lines = body ? body.split("\n") : [];
+	if (!options.expanded) {
+		const note = d.note ? ` · ${d.note}` : "";
+		return new Text(theme.fg("muted", `▸ ${d.label ?? "advisor"}（${lines.length} 行${note}，ctrl+o 展开）`), 1, 0);
+	}
+	const c = new Container();
+	c.addChild(new Text(theme.fg("toolTitle", theme.bold(`▾ ${d.label ?? "advisor"}`)), 1, 0));
+	if (d.note) c.addChild(new Text(theme.fg("muted", d.note), 1, 0));
+	c.addChild(new Markdown(body || "（空）", 1, 0, getMarkdownTheme()));
+	return c;
+}
+
+/**
+ * 事件驱动等待 advisor 完成，把 result.md 内容以纯显示 entry 打进 TUI。
+ * 协议与主 agent 拿结论的说明（mainAgentNote）同构：exit 文件已存在 → 直接判读；
+ * 否则阻塞 wait-for（零 token），与每轮 600s 兜底 race——超时后 kill 掉挂着的
+ * tmux client，再 has-session 判读：会话还在 = 没跑完，继续下一轮 wait-for；
+ * 会话已消失 = 已结束但信号被错过（如 pane-died hook 注册失败时的崩溃），读
+ * exit 判读。总量上限 6h，防止 hook 全部失效时无限等。不改变等待/读取协议：
+ * 主会话模型仍按 mainAgentNote 自行 wait-for + read；这里只是让用户在 TUI
+ * 里直接看到 advisor 的回复。
+ *
+ * 已知边界（均为可接受的最坏情况）：
+ * - 信号在「循环头检查 exit」与「wait-for 建立等待」之间的空窗被错过（信号对
+ *   后来者不重放）：该轮睡满 600s 后由 has-session 分支判读，报告最多迟到一轮；
+ * - 用户退出会话：本 watcher 的 JS 逻辑随之静默终止（不阻塞进程退出），tmux
+ *   client 进程成为孤儿，正常完成时被信号唤醒自行退出。
+ */
+const WATCH_ROUND_TIMEOUT = 600_000;
+const WATCH_TOTAL_LIMIT = 6 * 3600_000;
+async function watchAdvisorResult(
+	pi: ExtensionAPI,
+	session: string,
+	artifactPath: string,
+	exitFile: string,
+	done: string,
+): Promise<void> {
+	const started = Date.now();
+	while (Date.now() - started < WATCH_TOTAL_LIMIT) {
+		if (existsSync(exitFile)) break;
+		// wait-for 阻塞等待。wait-for 的信号会唤醒同一频道上所有等待者，
+		// 与主 agent 的 bash wait-for 互不干扰。
+		let waiter: import("node:child_process").ChildProcess | undefined;
+		const signal = runTmux(["wait-for", done], (proc) => {
+			waiter = proc;
+			// 全部句柄 unref：proc.unref 压不住 stdio 管道句柄（它们是独立的
+			// ref'd handle），必须逐个 unref，否则用户退出会话时主进程会被
+			// 挂着的 wait-for 管道拖住。代价：会话退出后该 tmux client 会成为
+			// 孤儿进程（挂到信号或 server 死亡才退出，正常完成路径会被唤醒收掉）。
+			proc.unref?.();
+			// stdio 为 pipe 时 stdout/stderr 实际是 net.Socket，有 unref
+			(proc.stdout as import("node:net").Socket | null)?.unref?.();
+			(proc.stderr as import("node:net").Socket | null)?.unref?.();
+		});
+		let fired = false;
+		const timeout = new Promise<undefined>((resolve) => {
+			const t = setTimeout(() => {
+				fired = true;
+				resolve(undefined);
+			}, WATCH_ROUND_TIMEOUT);
+			t.unref?.();
+		});
+		// 注意：tmux server 死掉时 wait-for 会以 code 0 静默醒来（像收到信号一样），
+		// 随后 exit 文件仍缺失、下一轮 wait-for 立刻报错——code≠0 也导向判读分支，
+		// 否则会空转死循环到 6h 上限。
+		const r = await Promise.race([signal, timeout]);
+		if (!fired && r && r.code === 0) continue; // 信号先到：回循环头读 exit 判读
+		waiter?.kill(); // 超时或 wait-for 异常退出：收掉挂着的 client
+		const has = await runTmux(["has-session", "-t", session]);
+		if (has.code === 0) continue; // 会话还在 = 没跑完，再等一轮
+		// 会话已消失 = 已结束但信号被错过：exit 缺失视为异常终止
+		if (!existsSync(exitFile)) {
+			pi.appendEntry("pi-advisor-reply", {
+				label: "advisor 回复",
+				body: existsSync(artifactPath) ? readFileSync(artifactPath, "utf8") : "",
+				note: `会话已结束但 exit 缺失（异常终止/被强杀，或 tmux server 不可用），回复可能不完整 · ${artifactPath}`,
+			});
+			return;
+		}
+	}
+	// 跳出循环 = exit 文件已出现（正常路径），或总量超限（hook 全部失效的挂死场景）
+	if (existsSync(exitFile)) {
+		const code = readFileSync(exitFile, "utf8").trim();
+		const ok = code === "0";
+		pi.appendEntry("pi-advisor-reply", {
+			label: "advisor 回复",
+			body: existsSync(artifactPath) ? readFileSync(artifactPath, "utf8") : "",
+			note: ok ? `exit 0 · ${artifactPath}` : `exit ${code || "缺失"}（异常终止），回复可能不完整 · ${artifactPath}`,
+		});
+		return;
+	}
+	pi.appendEntry("pi-advisor-reply", {
+		label: "advisor 回复",
+		body: "",
+		note: `等待超时（6 小时未结束），未产出回复。交付物路径：${artifactPath}`,
+	});
+}
+
 // ---------- advisor 工具注册 ----------
 
 /**
@@ -123,13 +242,25 @@ ${context?.trim() || "（无）"}
 export type AdvisorLaunch = (
 	question: string,
 	context: string | undefined,
-) => Promise<{ ok: boolean; text: string; ops?: string }>;
-
+) => Promise<{
+	ok: boolean;
+	text: string;
+	ops?: string;
+	/** 咨询简报原文（appendEntry 纯显示用，不进 LLM 上下文） */
+	brief?: string;
+	artifactPath?: string;
+	exitFile?: string;
+	/** done 频道名与 tmux 会话名：TUI watcher 事件驱动等待用（见 watchAdvisorResult） */
+	session?: string;
+	done?: string;
+}>;
 /**
  * 注册 advisor 工具（resolveAdvisor().enabled 时由 index.ts 调用）。
  * 模型/thinking 预设由 index.ts 的 launch 回调负责；这里只管工具定义。
  */
 export function setupAdvisor(pi: ExtensionAPI, launch: AdvisorLaunch): void {
+	pi.registerEntryRenderer("pi-advisor-brief", renderAdvisorEntry);
+	pi.registerEntryRenderer("pi-advisor-reply", renderAdvisorEntry);
 	pi.registerTool({
 		name: "advisor",
 		label: "咨询 advisor",
@@ -167,6 +298,16 @@ export function setupAdvisor(pi: ExtensionAPI, launch: AdvisorLaunch): void {
 			// advisor 也走完整的 spawn 流程（watchdog、pane-died 钩子、exit 文件、
 			// wait-for 协议），只是换了 brief 模板和子 agent 的工具/提示词。
 			const r = await launch(params.question, params.context);
+			if (r.ok) {
+				// 简报打进 TUI（appendEntry，不进 LLM 上下文）；回复等子 agent
+				// 完成后由 watcher 打进 TUI。等待/读取协议不受影响。
+				if (r.brief) {
+					pi.appendEntry("pi-advisor-brief", { label: "advisor 咨询简报", body: r.brief });
+				}
+				if (r.artifactPath && r.exitFile && r.session && r.done) {
+					void watchAdvisorResult(pi, r.session, r.artifactPath, r.exitFile, r.done).catch(() => {}); // readFileSync TOCTOU 等异常：watcher 是纯显示增强，静默失败
+				}
+			}
 			return {
 				content: [{ type: "text", text: r.text }],
 				details: { ops: r.ops },

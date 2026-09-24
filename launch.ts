@@ -61,7 +61,7 @@ function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
 }
 
 /** 启动成功的结果组装：速查表只给用户（放 details，经 renderResult 渲染，不进 LLM 上下文），等待说明进 LLM 上下文 */
-function startedResult(paths: SubagentPaths, completion: CompletionProfile): LaunchResult {
+function startedResult(paths: SubagentPaths, completion: CompletionProfile, brief: string): LaunchResult {
 	return {
 		ok: true,
 		text: `已启动子 agent（交付物：${paths.artifactPath}）。${buildMainAgentNote(paths, completion.exitNote)}`,
@@ -71,6 +71,7 @@ function startedResult(paths: SubagentPaths, completion: CompletionProfile): Lau
 		exitFile: paths.exitFile,
 		done: paths.done,
 		logPath: paths.logPath,
+		brief,
 	};
 }
 
@@ -92,6 +93,8 @@ export interface LaunchResult {
 	text: string;
 	/** 给用户的运维速查（只在 TUI 渲染，不进 LLM 上下文） */
 	ops?: string;
+	/** 简报原文（advisor 模式下 appendEntry 打进 TUI，不进 LLM 上下文） */
+	brief?: string;
 	session?: string;
 	artifactPath?: string;
 	exitFile?: string;
@@ -218,5 +221,5 @@ export async function launchSub(
 		};
 	}
 
-	return startedResult(paths, completion);
+	return startedResult(paths, completion, brief);
 }
