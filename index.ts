@@ -60,19 +60,22 @@ export default async function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "spawn_sub",
 		label: "子 agent 委派",
-		description: "Delegate a task to an isolated pi sub-agent; deliverable written to /tmp/pi-sub-<name>/result.md",
+		description:
+			"Delegate a task to an isolated pi sub-agent; the full deliverable is written to a system-generated path " +
+			"(/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response. " +
+			"Do not put the deliverable path in `question` — the brief the sub-agent receives already carries it",
 		promptSnippet: "delegate multi-step or context-heavy tasks to an isolated tmux sub-agent",
 		// 只写调用前的决策信息（何时用、context 要自包含）。
 		// 调用后怎么拿结论（wait-for 频道名、exit 文件判读）依赖运行时才知道的值，
 		// 只能写在工具返回的 mainAgentNote 里，这里不放。
 		promptGuidelines: [
-			"Use spawn_sub when a task needs many steps, heavy exploration, or lots of tokens; keep single-step work in the main session.",
-			"Before calling spawn_sub, distill everything the sub-agent needs into the context parameter (file paths, conclusions, URLs, constraints) — it has zero memory of this conversation.",
+			"spawn_sub: use for multi-step, exploration-heavy, or token-heavy tasks; keep single-step work in the main session.",
+			"spawn_sub: distill everything the sub-agent needs into the context parameter before calling — file paths, conclusions so far, URLs, constraints.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
 				description:
-					"Task goal, stated precisely; define what a good deliverable looks like (depth, language, acceptance criteria). Do not include the deliverable path — the directory is fixed at /tmp/pi-sub-<name>/result.md and the brief carries it",
+					"Task goal, stated precisely; define what a good deliverable looks like (depth, language, acceptance criteria)",
 			}),
 			context: Type.Optional(
 				Type.String({
