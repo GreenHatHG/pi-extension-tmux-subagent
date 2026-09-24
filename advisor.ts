@@ -267,18 +267,20 @@ export function setupAdvisor(pi: ExtensionAPI, launch: AdvisorLaunch): void {
 		description:
 			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor has zero memory " +
 			"of this conversation — it only sees `question` and `context`, which must be self-contained (file paths, conclusions so far, " +
-			"constraints, URLs). Returns a plan, a correction, or a stop signal; full advice is written to /tmp/pi-sub-<name>/result.md.",
+			"constraints, URLs). Returns a plan, a correction, or a stop signal. The full advice is written to a system-generated " +
+			"path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response. " +
+			"Do not put the deliverable path in `question` — the brief the advisor receives already carries it",
 		promptSnippet:
 			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
 		// 取材 rpiv-advisor 的规则，按本项目「context 需自包含」的调用方式改写。
 		promptGuidelines: [
-			"Call `advisor` BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption. Orientation (finding files, fetching a source, seeing what's there) is not substantive work; writing, editing, and declaring an answer are.",
-			"Also call `advisor` when stuck — errors recurring, approach not converging, results that don't fit — or when considering a change of approach.",
-			"Also call `advisor` when you believe the task is complete. Make the deliverable durable FIRST (write the file, save the result): the advisor call takes time, and a durable result survives a session that ends during the call.",
-			"The context parameter must be self-contained — the advisor has zero memory of this conversation and only sees your summary (file paths, conclusions so far, constraints). Every file path in it MUST be absolute; resolve relative paths against your cwd before calling.",
-			"Give the advisor's advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim, surface the conflict in one more `advisor` call instead of silently switching branches.",
-			"After each `advisor` result, put the advisor's key guidance into your next visible reply to the user before continuing — the user often cannot see collapsed tool results.",
-			"Not for trivial lookups where the next action is dictated by tool output you just read — the advisor adds latency and pays off on judgment calls.",
+			"advisor: call BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption; orientation (finding files, fetching a source, seeing what's there) is not substantive work.",
+			"advisor: also call when stuck (errors recurring, approach not converging, results that don't fit) or when considering a change of approach.",
+			"advisor: call when you believe the task is complete — make the deliverable durable FIRST (write the file, save the result), because the advisor call takes time and a durable result survives a session that ends mid-call.",
+			"advisor: every file path inside the context parameter MUST be absolute — resolve relative paths against your cwd before calling.",
+			"advisor: give its advice serious weight — if a step fails empirically or evidence contradicts a specific claim, surface the conflict in another advisor call instead of silently switching branches.",
+			"advisor: after each result, restate its key guidance in your next visible reply to the user — they often cannot see collapsed tool results. The full advice lives in the result.md path given in the tool response: wait for completion as instructed there, read the file, then restate what it actually says.",
+			"advisor: not for trivial lookups where the next action is dictated by tool output you just read — it adds latency and pays off on judgment calls.",
 		],
 		parameters: Type.Object({
 			question: Type.String({

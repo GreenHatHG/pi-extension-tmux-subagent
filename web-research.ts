@@ -319,19 +319,21 @@ export function setupWebResearch(pi: ExtensionAPI, launch: WebResearchLaunch): v
 		label: "联网调研",
 		description:
 			"Delegate a web-research task to an isolated pi sub-agent in tmux. The sub-agent runs the web searches and " +
-			"page fetches itself; only distilled conclusions with source URLs enter this conversation.",
+			"page fetches itself; only distilled conclusions with source URLs enter this conversation. The full deliverable is " +
+			"written to a system-generated path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response. " +
+			"Do not put the deliverable path in `question` — the brief the sub-agent receives already carries it",
 		promptSnippet: "delegate web search/fetch to an isolated tmux sub-agent; only distilled conclusions return",
 		// 强导向：主会话默认不带任何联网工具（联网能力只存在于 web-research 子 agent），
 		// 一切搜索/抓取都必须走这里，防止原始网页内容进入主会话上下文。
 		promptGuidelines: [
-			"Any web search or page fetch goes through web_research — the main session has no direct web access by design; raw search results and page content must not enter this conversation.",
-			"Distill everything the sub-agent needs into the context parameter: the precise question, known URLs, facts so far, constraints (language, recency, depth). It has zero memory of this conversation.",
-			"Not for local questions answerable from files in this repo — keep those in the main session.",
+			"web_research: ALL web search and page fetch goes through this tool — the main session has no direct web access by design; raw search results and page content must never enter this conversation.",
+			"web_research: distill everything the sub-agent needs into the context parameter — the precise question, known URLs, facts so far, constraints (language, recency, depth).",
+			"web_research: not for local questions answerable from files in this repo — keep those in the main session.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
 				description:
-					"The research question, stated precisely: what a good answer looks like (depth, language, recency, acceptance criteria). Do not include the deliverable path — the directory is fixed at /tmp/pi-sub-<name>/result.md and the brief carries it",
+					"The research question, stated precisely: what a good answer looks like (depth, language, recency, acceptance criteria)",
 			}),
 			context: Type.Optional(
 				Type.String({
