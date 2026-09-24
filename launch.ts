@@ -16,6 +16,7 @@ import {
 } from "./completion";
 import { kebab, resolvePaths, type SubagentPaths, shortId } from "./paths";
 import { runTmux, SOCKET } from "./tmux";
+import { buildWebResearchBrief, WEB_RESEARCH_ENV, webResearchPresetFlags } from "./web-research";
 
 /**
  * 同名会话兜底检查：会话名带随机后缀，正常情况下不会命中；兜底场景仍不重复拉起，
@@ -74,11 +75,13 @@ function startedResult(paths: SubagentPaths, completion: CompletionProfile): Lau
 }
 
 export interface LaunchOpts {
-	/** "advisor" 用咨询简报模板 + 限制工具集 + 换系统提示词；缺省 = 任务模式 */
-	mode?: "advisor";
+	/** "advisor" 用咨询简报 + 限制工具集 + 换系统提示词；"web-research" 用联网调研简报 +
+	 *  预设 flag（空：提示词整形与工具收窄均在子 agent 进程内由钩子完成）+ 注入引导环境
+	 *  变量（子 agent 进程内动态激活 pi-web-access）；缺省 = 任务模式 */
+	mode?: "advisor" | "web-research";
 	/**
 	 * 追加到预设之后的子 agent pi CLI 参数（已 shQuote）。pi 的单值 flag
-	 * （--model/--tools/--system-prompt）是后值覆盖前值，可覆盖模式预设。
+	 * （--model/--tools/--system-prompt/--append-system-prompt）是后值覆盖前值，可覆盖模式预设。
 	 */
 	extraArgs?: string[];
 }
@@ -146,6 +149,7 @@ export async function launchSub(
 	const useWatchdog = isWatchdogAvailable(pi);
 	const paths = resolvePaths(`${kebab(question)}-${shortId()}`);
 	const completion = resolveCompletion(useWatchdog, paths);
+	const isWebResearch = opts?.mode === "web-research";
 
 	const clash = await existingSessionReport(paths.session);
 	if (clash) {
@@ -155,14 +159,18 @@ export async function launchSub(
 	const brief =
 		opts?.mode === "advisor"
 			? buildAdvisorBrief(question, context, paths.artifactPath, useWatchdog)
-			: buildBrief(question, context, paths.artifactPath, useWatchdog);
+			: isWebResearch
+				? buildWebResearchBrief(question, context, paths.artifactPath, useWatchdog)
+				: buildBrief(question, context, paths.artifactPath, useWatchdog);
 	prepareRunDir(paths, brief);
 
-	// 模式预设 flag 在前（advisor 模式限制工具集、换 advisor 人格提示词，见 advisor.ts
-	// 的 advisorPresetFlags），调用方的 extraArgs 在后：pi 的参数解析对
-	// --model/--tools/--system-prompt 这类单值 flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
+	// 模式预设 flag 在前（advisor 模式限制工具集、换 advisor 人格提示词，见 advisor.ts；
+	// web-research 模式换联网调研人格、白名单含动态注册的扩展工具，见 web-research.ts），
+	// 调用方的 extraArgs 在后：pi 的参数解析对 --model/--tools/--system-prompt 这类单值
+	// flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
 	const flags: string[] = [
 		...(opts?.mode === "advisor" ? advisorPresetFlags(useWatchdog) : []),
+		...(isWebResearch ? webResearchPresetFlags() : []),
 		...(opts?.extraArgs ?? []),
 	];
 
@@ -172,6 +180,9 @@ export async function launchSub(
 		"new-session",
 		...baseEnvArgs(paths),
 		...completion.extraEnvArgs,
+		// web-research 引导：子 agent 进程的扩展 factory 检测到该变量后在 load 阶段
+		// 动态激活 pi-web-access 工具集（见 web-research.ts 的 bootstrapWebResearch）
+		...(isWebResearch ? ["-e", `${WEB_RESEARCH_ENV}=1`] : []),
 		"-d",
 		"-s",
 		paths.session,

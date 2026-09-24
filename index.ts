@@ -6,6 +6,7 @@
  * - completion.ts：两条收尾路径（watchdog 交互式 / pi -p 批处理）的差异收敛
  * - brief.ts / paths.ts / tmux.ts：简报模板、/tmp 运行目录布局、tmux 原语
  * - advisor.ts：advisor 配置解析、简报模板与工具定义
+ * - web-research.ts：web_research 工具（默认开启）与子 agent 联网工具的引导激活
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -14,8 +15,13 @@ import { notifyAdvisorMissingModel, resolveAdvisor, setupAdvisor } from "./advis
 import { launchSub } from "./launch";
 import { setupSelfCheck } from "./selfcheck";
 import { shQuote } from "./tmux";
+import { bootstrapWebResearch, setupWebResearch } from "./web-research";
 
 export default async function (pi: ExtensionAPI) {
+	// web-research 子 agent 引导：必须在 setupSelfCheck 的子 agent 提前 return 之前执行。
+	// 主会话进程无 PI_SUB_WEB，直接空操作；web-research 子 agent 进程在 load 阶段
+	// 动态激活 pi-web-access 工具集（见 web-research.ts）。
+	await bootstrapWebResearch(pi);
 	// 子 agent pane 内（启动时经 tmux -e 注入 PI_SUBAGENT=1）不注册任何工具，直接返回：
 	// 门禁无条件生效（防嵌套委派，替代原先的 promptGuidelines 软约束），watchdog 缺位
 	// 的自检钩子是否注册由 setupSelfCheck 按 PI_WATCHDOG 注入与否决定，见 selfcheck.ts。
@@ -46,12 +52,17 @@ export default async function (pi: ExtensionAPI) {
 		notifyAdvisorMissingModel(pi);
 	}
 
+	// ---------- web_research（默认开启）----------
+	// 联网搜索/抓取一律委派给 web-research 子 agent：原始搜索结果与网页内容隔离在子
+	// agent 上下文里，主会话只读蒸馏后的结论。工具定义与子 agent 引导见 web-research.ts。
+	setupWebResearch(pi, (question, context) => launchSub(pi, question, context, { mode: "web-research" }));
+
 	// ---------- spawn_sub ----------
 	pi.registerTool({
 		name: "spawn_sub",
 		label: "子 agent 委派",
 		description: "Delegate a task to an isolated pi sub-agent; deliverable written to /tmp/pi-sub-<name>/result.md",
-		promptSnippet: "spawn_sub — delegate multi-step or context-heavy tasks to an isolated tmux sub-agent",
+		promptSnippet: "delegate multi-step or context-heavy tasks to an isolated tmux sub-agent",
 		// 只写调用前的决策信息（何时用、context 要自包含）。
 		// 调用后怎么拿结论（wait-for 频道名、exit 文件判读）依赖运行时才知道的值，
 		// 只能写在工具返回的 mainAgentNote 里，这里不放。

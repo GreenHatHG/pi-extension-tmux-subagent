@@ -95,6 +95,17 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 优先级：`PI_ADVISOR_MODEL` 环境变量 > 配置文件 `model`。只配 `enabled: true` 而没有模型不会开启。模型/thinking 由配置决定，调用方不能通过参数传 `--model`。
 
+## web_research（默认开启）
+
+`web_research` 把联网搜索/抓取委派给 tmux 隔离的 web-research 子 agent：原始搜索结果与网页正文全部留在子 agent 上下文里，主会话只读蒸馏后的结论（写入 `/tmp/pi-sub-<name>/result.md`，每条附来源 URL）。它复用 spawn_sub 的全部基础设施，只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,bash,write` + pi-web-access 联网工具（默认 `web_search` / `source_check` / `fetch_content` / `get_search_content`，实际名单运行时从 pi-web-access 的 `web-search.json` 解析 `toolNames` 与 `tools.*.enabled` 得出，与扩展真实注册的工具保持同步）；bash 仅限搜索/检索相关的辅助工作。
+
+子 agent 的联网工具不走 bash 调 CLI，而是进程内动态加载 pi-web-access 扩展：启动器经 tmux 注入 `PI_SUB_WEB=1`，子 agent 进程的扩展 factory 在 load 阶段 `import pi-web-access` 并注册其原生工具（`--tools` 白名单对扩展注册的工具同样生效）。两种安装形态都支持：
+
+- pi-web-access 已全局安装（settings.json packages 含 pi-web-access）：所有 pi 进程自动继承工具，跳过动态加载避免重复注册；
+- 未全局安装（如本地开发路径）：靠动态加载。扩展路径依次尝试：环境变量 `PI_WEB_ACCESS_EXTENSION`（显式覆盖，设了就只信它）> Node 解析 `pi-web-access/package.json`（覆盖 npm 安装副本，入口读其 `pi.extensions[0]`）> 同级 checkout（本包与 pi-web-access 的本地副本并排放在同一目录）。全部失败不阻断启动，失败原因（含已尝试的位置与修复指引）注入子 agent 首回合，模型会把失败写进交付物并停止。
+
+主会话默认不带任何联网工具，一切搜索/抓取都走 `web_research`（工具 guideline 强导向），防止原始网页内容进入主会话上下文。任务模式的 `spawn_sub` 子 agent 不注入引导变量，保持无网；任务中途要搜的活儿由主会话拆给 `web_research`。
+
 ## 上下文与 token 开销
 
 ### 常驻开销（每次对话都在）

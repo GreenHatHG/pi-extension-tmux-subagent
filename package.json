@@ -22,6 +22,7 @@
 	"files": [
 		"index.ts",
 		"advisor.ts",
+		"web-research.ts",
 		"launch.ts",
 		"completion.ts",
 		"brief.ts",
