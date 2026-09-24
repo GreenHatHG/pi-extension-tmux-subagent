@@ -16,7 +16,6 @@ import { launchSub } from "./launch";
 import { setupSelfCheck } from "./selfcheck";
 import { shQuote } from "./tmux";
 import { bootstrapWebResearch, setupWebResearch } from "./web-research";
-
 export default async function (pi: ExtensionAPI) {
 	// web-research 子 agent 引导：必须在 setupSelfCheck 的子 agent 提前 return 之前执行。
 	// 主会话进程无 PI_SUB_WEB，直接空操作；web-research 子 agent 进程在 load 阶段

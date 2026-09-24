@@ -12,13 +12,18 @@ export function shQuote(s: string): string {
 	return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** 通用进程运行器：收集 stdout/stderr */
-export function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+/** 通用进程运行器：收集 stdout/stderr。onSpawn 可拿到子进程引用（用于超时后 kill，如 wait-for 客户端） */
+export function run(
+	cmd: string,
+	args: string[],
+	onSpawn?: (proc: import("node:child_process").ChildProcess) => void,
+): Promise<{ code: number; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
 		const proc = spawn(cmd, args, {
 			env: { ...process.env, TMUX: "" },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		onSpawn?.(proc);
 		let stdout = "";
 		let stderr = "";
 		proc.stdout.on("data", (d) => (stdout += d.toString()));
@@ -29,6 +34,9 @@ export function run(cmd: string, args: string[]): Promise<{ code: number; stdout
 }
 
 /** 运行 tmux 命令。TMUX= 清空避免嵌套告警（等价 shell 里的 TMUX= 前缀）。 */
-export function runTmux(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-	return run("tmux", ["-L", SOCKET, ...args]);
+export function runTmux(
+	args: string[],
+	onSpawn?: (proc: import("node:child_process").ChildProcess) => void,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+	return run("tmux", ["-L", SOCKET, ...args], onSpawn);
 }
