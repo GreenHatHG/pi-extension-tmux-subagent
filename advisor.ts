@@ -138,7 +138,7 @@ export function setupAdvisor(pi: ExtensionAPI, launch: AdvisorLaunch): void {
 			"of this conversation — it only sees `question` and `context`, which must be self-contained (file paths, conclusions so far, " +
 			"constraints, URLs). Returns a plan, a correction, or a stop signal; full advice is written to /tmp/pi-sub-<name>/result.md.",
 		promptSnippet:
-			"advisor — get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
+			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
 		// 取材 rpiv-advisor 的规则，按本项目「context 需自包含」的调用方式改写。
 		promptGuidelines: [
 			"Call `advisor` BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption. Orientation (finding files, fetching a source, seeing what's there) is not substantive work; writing, editing, and declaring an answer are.",
