@@ -3,8 +3,9 @@
  * 以及主会话侧感知完成所依赖的 tmux hook 与命令链。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { SubagentPaths } from "./paths";
-import { runTmux, SOCKET, shQuote } from "./tmux";
+import { ENV_SUB_DONE, ENV_SUB_EXIT_FILE, ENV_SUBAGENT } from "../core/env";
+import type { SubagentPaths } from "../core/paths";
+import { runTmux, SOCKET, shQuote } from "../core/tmux";
 
 /**
  * watchdog 收尾路径是否可用：/watchdog 命令由 pi-watchdog 无条件注册，代表扩展已
@@ -89,13 +90,13 @@ export function baseEnvArgs(paths: SubagentPaths): string[] {
 	return [
 		// 两条路都注入：子 agent 内禁注册 spawn_sub（防嵌套）。
 		"-e",
-		"PI_SUBAGENT=1",
+		`${ENV_SUBAGENT}=1`,
 		// 两条路都注入：子 agent 自检失败时（watchdog 缺位）写 exit 并发完成信号，
 		// 让等待方快速失败而不是静默挂死
 		"-e",
-		`PI_SUB_EXIT_FILE=${paths.exitFile}`,
+		`${ENV_SUB_EXIT_FILE}=${paths.exitFile}`,
 		"-e",
-		`PI_SUB_DONE=${paths.done}`,
+		`${ENV_SUB_DONE}=${paths.done}`,
 	];
 }
 

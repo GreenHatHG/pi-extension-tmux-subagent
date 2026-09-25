@@ -1,11 +1,12 @@
 /**
- * 子 agent 启动编排：探测完成路径 → 准备简报与运行目录 → tmux 拉起 pane →
- * 注册完成信号 hook → 组装主会话侧的返回与运维文案。
+ * 子 agent 启动编排：探测完成路径 → 选模式（SubagentMode）→ 准备简报与运行目录 →
+ * tmux 拉起 pane → 注册完成信号 hook → 组装主会话侧的返回与运维文案。
+ *
+ * 主体不出现任何按模式 if-else：brief/presetFlags/extraEnvArgs 全部来自 SubagentMode
+ * （modes/types.ts），收尾协议差异全部来自 CompletionProfile（completion/profile.ts）。
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { advisorPresetFlags, buildAdvisorBrief } from "./advisor";
-import { buildBrief } from "./brief";
 import {
 	baseEnvArgs,
 	buildPaneCommand,
@@ -13,10 +14,10 @@ import {
 	isWatchdogAvailable,
 	registerPaneDiedHook,
 	resolveCompletion,
-} from "./completion";
-import { kebab, resolvePaths, type SubagentPaths, shortId } from "./paths";
-import { runTmux, SOCKET } from "./tmux";
-import { buildWebResearchBrief, WEB_RESEARCH_ENV, webResearchPresetFlags } from "./web-research";
+} from "../completion/profile";
+import { kebab, resolvePaths, type SubagentPaths, shortId } from "../core/paths";
+import { runTmux, SOCKET } from "../core/tmux";
+import { type SubagentMode, taskMode } from "../modes/types";
 
 /**
  * 同名会话兜底检查：会话名带随机后缀，正常情况下不会命中；兜底场景仍不重复拉起，
@@ -58,33 +59,6 @@ function prepareRunDir(paths: SubagentPaths, brief: string): void {
  */
 function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
 	return `需要结论时在 bash 执行 tmux -L ${SOCKET} wait-for ${paths.done}，必须用 bash 的 timeout 参数限时（建议 600s，阻塞等待零 token）。timeout 命中后重发本命令继续等即可（tmux 会记住已发的信号，不会永久阻塞）。若连续 2-3 次 timeout 且 \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` 显示会话仍在：执行 \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等、kill-session 后按失败处理。返回后 read ${paths.artifactPath}。${exitNote}`;
-}
-
-/** 启动成功的结果组装：速查表只给用户（放 details，经 renderResult 渲染，不进 LLM 上下文），等待说明进 LLM 上下文 */
-function startedResult(paths: SubagentPaths, completion: CompletionProfile, brief: string): LaunchResult {
-	return {
-		ok: true,
-		text: `已启动子 agent（交付物：${paths.artifactPath}）。${buildMainAgentNote(paths, completion.exitNote)}`,
-		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done),
-		session: paths.session,
-		artifactPath: paths.artifactPath,
-		exitFile: paths.exitFile,
-		done: paths.done,
-		logPath: paths.logPath,
-		brief,
-	};
-}
-
-export interface LaunchOpts {
-	/** "advisor" 用咨询简报 + 限制工具集 + 换系统提示词；"web-research" 用联网调研简报 +
-	 *  预设 flag（空：提示词整形与工具收窄均在子 agent 进程内由钩子完成）+ 注入引导环境
-	 *  变量（子 agent 进程内动态激活 pi-web-access）；缺省 = 任务模式 */
-	mode?: "advisor" | "web-research";
-	/**
-	 * 追加到预设之后的子 agent pi CLI 参数（已 shQuote）。pi 的单值 flag
-	 * （--model/--tools/--system-prompt/--append-system-prompt）是后值覆盖前值，可覆盖模式预设。
-	 */
-	extraArgs?: string[];
 }
 
 export interface LaunchResult {
@@ -134,16 +108,34 @@ tmux -L pi-sub kill-session -t ${session}
 tmux -L pi-sub kill-server`;
 }
 
+/** 启动成功的结果组装：速查表只给用户（放 details，经 renderResult 渲染，不进 LLM 上下文），等待说明进 LLM 上下文 */
+function startedResult(paths: SubagentPaths, completion: CompletionProfile, brief: string): LaunchResult {
+	return {
+		ok: true,
+		text: `已启动子 agent（交付物：${paths.artifactPath}）。${buildMainAgentNote(paths, completion.exitNote)}`,
+		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done),
+		session: paths.session,
+		artifactPath: paths.artifactPath,
+		exitFile: paths.exitFile,
+		done: paths.done,
+		logPath: paths.logPath,
+		brief,
+	};
+}
+
 /**
- * 启动一个隔离的 pi 子 agent：默认任务模式；mode: "advisor" 时用咨询简报模板 +
- * 限制工具集 + 换系统提示词（额外 flag 由调用方经 extraArgs 注入，如 --model 预设，
- * 见 index.ts 的 advisor 接线）。
+ * 启动一个隔离的 pi 子 agent。默认任务模式（taskMode）：
+ * - advisor 模式：咨询简报 + 限制工具集 + 换系统提示词（--model 预设由调用方经
+ *   extraArgs 注入，见 tools/advisor.ts 的接线）
+ * - web-research 模式：联网调研简报 + 预设 flag + 注入引导环境变量（子 agent 进程内
+ *   动态激活 pi-web-access，见 session/web-bootstrap.ts）
  */
 export async function launchSub(
 	pi: ExtensionAPI,
 	question: string,
 	context: string | undefined,
-	opts?: LaunchOpts,
+	mode: SubagentMode = taskMode,
+	extraArgs: string[] = [],
 ): Promise<LaunchResult> {
 	if (!question.trim()) {
 		return { ok: false, text: "缺少任务描述（question）。" };
@@ -152,30 +144,19 @@ export async function launchSub(
 	const useWatchdog = isWatchdogAvailable(pi);
 	const paths = resolvePaths(`${kebab(question)}-${shortId()}`);
 	const completion = resolveCompletion(useWatchdog, paths);
-	const isWebResearch = opts?.mode === "web-research";
 
 	const clash = await existingSessionReport(paths.session);
 	if (clash) {
 		return { ok: false, text: clash };
 	}
 
-	const brief =
-		opts?.mode === "advisor"
-			? buildAdvisorBrief(question, context, paths.artifactPath, useWatchdog)
-			: isWebResearch
-				? buildWebResearchBrief(question, context, paths.artifactPath, useWatchdog)
-				: buildBrief(question, context, paths.artifactPath, useWatchdog);
+	const brief = mode.brief(question, context, paths.artifactPath, useWatchdog);
 	prepareRunDir(paths, brief);
 
-	// 模式预设 flag 在前（advisor 模式限制工具集、换 advisor 人格提示词，见 advisor.ts；
-	// web-research 模式换联网调研人格、白名单含动态注册的扩展工具，见 web-research.ts），
-	// 调用方的 extraArgs 在后：pi 的参数解析对 --model/--tools/--system-prompt 这类单值
-	// flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
-	const flags: string[] = [
-		...(opts?.mode === "advisor" ? advisorPresetFlags(useWatchdog) : []),
-		...(isWebResearch ? webResearchPresetFlags() : []),
-		...(opts?.extraArgs ?? []),
-	];
+	// 模式预设 flag 在前（可被覆盖的单值 flag 见 SubagentMode.presetFlags 注释），
+	// 调用方的 extraArgs 在后：pi 的参数解析对 --model/--tools/--system-prompt 这类
+	// 单值 flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
+	const flags: string[] = [...mode.presetFlags(useWatchdog), ...extraArgs];
 
 	// 注意：-e 是 new-session 命令的参数，必须跟在 new-session 后面；
 	// 放在 tmux 全局选项位置会报 "unknown option -- e"
@@ -183,9 +164,7 @@ export async function launchSub(
 		"new-session",
 		...baseEnvArgs(paths),
 		...completion.extraEnvArgs,
-		// web-research 引导：子 agent 进程的扩展 factory 检测到该变量后在 load 阶段
-		// 动态激活 pi-web-access 工具集（见 web-research.ts 的 bootstrapWebResearch）
-		...(isWebResearch ? ["-e", `${WEB_RESEARCH_ENV}=1`] : []),
+		...mode.extraEnvArgs(),
 		"-d",
 		"-s",
 		paths.session,
