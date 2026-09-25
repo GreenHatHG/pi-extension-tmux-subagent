@@ -1,5 +1,5 @@
 /**
- * 子 agent 的会话命名与 /tmp 运行目录布局。
+ * 子 agent 的会话命名与 /tmp 运行目录布局。core/ 最底层，无项目内依赖。
  */
 import { randomInt } from "node:crypto";
 import { join } from "node:path";

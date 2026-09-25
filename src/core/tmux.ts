@@ -1,6 +1,6 @@
 /**
  * tmux 子进程原语：专用 socket 上的命令执行与 shell 引用包装。
- * 本模块不依赖项目内其他模块，是依赖链的最底层。
+ * core/ 是依赖链的最底层：不依赖项目内其他模块，其他一切依赖 core/。
  */
 import { spawn } from "node:child_process";
 
