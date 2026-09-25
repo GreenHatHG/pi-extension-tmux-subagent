@@ -47,6 +47,15 @@ function renderAdvisorEntry(
 
 // ---------- TUI watcher：事件驱动等待 advisor 完成 ----------
 
+/** 失败时把 stderr log 尾部暴露给用户（空回复 entry 不能再是空：根因就在这里）。
+ * watchdog 路径 pi 的 stderr 重定向到 log（见 completion/profile.ts）；批处理路径
+ * log 是 stdout+stderr。读不到（旧格式/未生成）给明确提示。 */
+function failureLog(logPath: string): string {
+	if (!logPath || !existsSync(logPath)) return "（无 stderr log——旧版本 pane 命令未重定向 stderr）";
+	const lines = readFileSync(logPath, "utf8").split("\n");
+	return ["## 子 agent stderr（末 30 行）", "```", ...lines.slice(-30), "```"].join("\n");
+}
+
 /**
  * 事件驱动等待 advisor 完成，把 result.md 内容以纯显示 entry 打进 TUI。
  * 协议与主 agent 拿结论的说明（mainAgentNote）同构：exit 文件已存在 → 直接判读；
@@ -71,6 +80,7 @@ async function watchAdvisorResult(
 	artifactPath: string,
 	exitFile: string,
 	done: string,
+	logPath: string,
 ): Promise<void> {
 	const started = Date.now();
 	while (Date.now() - started < WATCH_TOTAL_LIMIT) {
@@ -109,7 +119,7 @@ async function watchAdvisorResult(
 		if (!existsSync(exitFile)) {
 			pi.appendEntry("pi-advisor-reply", {
 				label: "advisor 回复",
-				body: existsSync(artifactPath) ? readFileSync(artifactPath, "utf8") : "",
+				body: existsSync(artifactPath) ? readFileSync(artifactPath, "utf8") : failureLog(logPath),
 				note: `会话已结束但 exit 缺失（异常终止/被强杀，或 tmux server 不可用），回复可能不完整 · ${artifactPath}`,
 			});
 			return;
@@ -121,8 +131,8 @@ async function watchAdvisorResult(
 		const ok = code === "0";
 		pi.appendEntry("pi-advisor-reply", {
 			label: "advisor 回复",
-			body: existsSync(artifactPath) ? readFileSync(artifactPath, "utf8") : "",
-			note: ok ? `exit 0 · ${artifactPath}` : `exit ${code || "缺失"}（异常终止），回复可能不完整 · ${artifactPath}`,
+			body: existsSync(artifactPath) && ok ? readFileSync(artifactPath, "utf8") : failureLog(logPath),
+			note: ok ? `exit 0 · ${artifactPath}` : `exit ${code || "缺失"}（异常终止）· ${artifactPath}`,
 		});
 		return;
 	}
@@ -199,10 +209,14 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 				}),
 			),
 		}),
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			// advisor 也走完整的 spawn 流程（watchdog、pane-died 钩子、exit 文件、
 			// wait-for 协议），只是换了 brief 模板和子 agent 的工具/提示词。
-			const r = await launch(params.question, params.context);
+			// 主会话 jsonl 路径只能在 execute 的 ctx 拿到（ExtensionAPI 无 sessionManager），
+			// 传给 launch 写进简报的取证栏目（recall CLI 以路径为参数，无需环境变量注入）；
+			// 首条消息落盘前可能为 undefined，简报会声明取证不可用。
+			const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
+			const r = await launch(params.question, params.context, sessionFile);
 			if (r.ok) {
 				// 简报打进 TUI（appendEntry，不进 LLM 上下文）；回复等子 agent
 				// 完成后由 watcher 打进 TUI。等待/读取协议不受影响。
@@ -210,7 +224,7 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 					pi.appendEntry("pi-advisor-brief", { label: "advisor 咨询简报", body: r.brief });
 				}
 				if (r.artifactPath && r.exitFile && r.session && r.done) {
-					void watchAdvisorResult(pi, r.session, r.artifactPath, r.exitFile, r.done).catch(() => {}); // readFileSync TOCTOU 等异常：watcher 是纯显示增强，静默失败
+					void watchAdvisorResult(pi, r.session, r.artifactPath, r.exitFile, r.done, r.logPath ?? "").catch(() => {}); // readFileSync TOCTOU 等异常：watcher 是纯显示增强，静默失败
 				}
 			}
 			return startedToolResult(r.text, r.ops);

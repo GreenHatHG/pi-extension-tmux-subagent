@@ -6,6 +6,7 @@
  * （modes/types.ts），收尾协议差异全部来自 CompletionProfile（completion/profile.ts）。
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	baseEnvArgs,
@@ -18,6 +19,7 @@ import {
 import { kebab, resolvePaths, type SubagentPaths, shortId } from "../core/paths";
 import { runTmux, SOCKET } from "../core/tmux";
 import { type SubagentMode, taskMode } from "../modes/types";
+import { runVccCompact, type VccSummary } from "../modes/vcc";
 
 /**
  * 同名会话兜底检查：会话名带随机后缀，正常情况下不会命中；兜底场景仍不重复拉起，
@@ -58,7 +60,7 @@ function prepareRunDir(paths: SubagentPaths, brief: string): void {
  * 再决定等还是处置——等待方挂起比等待方超时更糟。
  */
 function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
-	return `需要结论时在 bash 执行 tmux -L ${SOCKET} wait-for ${paths.done}，必须用 bash 的 timeout 参数限时（建议 600s，阻塞等待零 token）。timeout 命中后重发本命令继续等即可（tmux 会记住已发的信号，不会永久阻塞）。若连续 2-3 次 timeout 且 \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` 显示会话仍在：执行 \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等、kill-session 后按失败处理。返回后 read ${paths.artifactPath}。${exitNote}`;
+	return `需要结论时在 bash 执行 tmux -L ${SOCKET} wait-for ${paths.done}。等待必须有限制：用 bash 工具自带的 timeout 参数限时（建议 600s；是工具调用的参数，不要在命令里加 shell 的 timeout 前缀）。阻塞等待零 token。timeout 命中后重发本命令继续等即可（tmux 会记住已发的信号，不会永久阻塞）。若连续 2-3 次 timeout 且 \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` 显示会话仍在：执行 \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等、kill-session 后按失败处理。返回后 read ${paths.artifactPath}。若 exit 非 0 或回复为空，read ${paths.logPath} 看子 agent 的 stderr 找根因。${exitNote}`;
 }
 
 export interface LaunchResult {
@@ -136,6 +138,11 @@ export async function launchSub(
 	context: string | undefined,
 	mode: SubagentMode = taskMode,
 	extraArgs: string[] = [],
+	opts?: {
+		/** advisor 取证：主会话 jsonl 路径与 pi-vcc CLI 调用命令，透传给简报的取证栏目 */
+		sessionFile?: string;
+		vccCli?: string;
+	},
 ): Promise<LaunchResult> {
 	if (!question.trim()) {
 		return { ok: false, text: "缺少任务描述（question）。" };
@@ -150,7 +157,18 @@ export async function launchSub(
 		return { ok: false, text: clash };
 	}
 
-	const brief = mode.brief(question, context, paths.artifactPath, useWatchdog);
+	// advisor 取证第一级：vcc 压缩摘要预生成（目录先建；失败不阻塞，简报降级为 recall-only）
+	let vccSummary: VccSummary | undefined;
+	if (opts?.sessionFile && opts?.vccCli) {
+		mkdirSync(paths.dir, { recursive: true });
+		vccSummary = await runVccCompact(opts.vccCli, opts.sessionFile, join(paths.dir, "vcc-summary.md"));
+	}
+
+	const brief = mode.brief(question, context, paths.artifactPath, useWatchdog, {
+		sessionFile: opts?.sessionFile,
+		vccCli: opts?.vccCli,
+		vccSummary,
+	});
 	prepareRunDir(paths, brief);
 
 	// 模式预设 flag 在前（可被覆盖的单值 flag 见 SubagentMode.presetFlags 注释），

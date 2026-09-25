@@ -7,8 +7,9 @@ import { shQuote } from "../core/tmux";
 
 // ---------- advisor：限制工具集 + 换 advisor 人格 ----------
 
-/** advisor 模式允许的子 agent 工具集：判断型最小集，交付靠 write（+ watchdog 收尾时的 stop_watchdog，无 watchdog 时由调用方滤掉） */
-export const ADVISOR_TOOLS = ["read", "write", "stop_watchdog"];
+/** advisor 模式允许的子 agent 工具集：判断型最小集，交付靠 write（+ watchdog 收尾时的 stop_watchdog，无 watchdog 时由调用方滤掉）。
+ * bash 仅用于跑 pi-vcc CLI 做只读取证（约束在系统提示词与简报的取证栏目；未配 vccCli 时放行无害）。 */
+export const ADVISOR_TOOLS = ["read", "write", "stop_watchdog", "bash"];
 
 /**
  * advisor 模式下子 agent 的系统提示词（pi --system-prompt 替换默认提示词）。
@@ -24,9 +25,11 @@ Your reply is ONE of:
 - a stop signal: the executor should halt and escalate to the user.
 
 Rules:
+- Judge on what the brief gives you. Forensics (pre-computed compaction summary + pi-vcc recall, see your brief) is a supplement, not a default: consult it only when the summary alone seems insufficient for the judgment — pulling it on demand is the point.
 - Read files only when needed to verify a claim in the context summary. NEVER modify anything: write is for the deliverable only.
 - Context file paths are absolute; read them as given. If a path looks relative, do not guess its base — state that the path is unusable and ask for an absolute one.
 - Ground advice in the given context. Name files, functions, and line numbers where possible.
+- bash is ONLY for running the pi-vcc CLI (see your brief's forensics section) as read-only forensics: the pre-computed compaction summary is readable as a file, and recall searches/recovers details it may omit. NEVER use it to modify files, run builds/tests, or explore the filesystem — if you think you need that, that is an execution concern: stop and escalate instead.
 - Be concise and directive. No preamble, no apologies, no meta-commentary — just the guidance.
 - Deliverable protocol (from your brief): write your full guidance to the result.md path given there.`;
 

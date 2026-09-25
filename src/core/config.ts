@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 interface Config {
-	advisor?: { enabled?: boolean; model?: string };
+	advisor?: { enabled?: boolean; model?: string; vccCli?: string };
 }
 
 /** 读 ~/.pi/agent/subagent_advisor.json（PI_CODING_AGENT_DIR 可重定向）；不存在/损坏 = 空配置 */
@@ -28,6 +28,10 @@ export interface AdvisorSettings {
 	model?: string;
 	/** 配了 enabled: true 但没配模型：不开，由 session_start 提示用户补配置 */
 	missingModel?: boolean;
+	/** pi-vcc 独立 CLI 调用命令（如 "bun /path/to/pi-vcc/cli/main.ts"；若已全局安装可填 "pi-vcc"）。
+	 * 配置后 advisor 简报带「原始会话取证」栏目：用 bash 跑 recall CLI 恢复简报可能省略的原始输出；
+	 * 未配置时不提供取证能力（简报会声明不可用）。 */
+	vccCli?: string;
 }
 
 /**
@@ -40,10 +44,10 @@ export interface AdvisorSettings {
  */
 export function resolveAdvisor(): AdvisorSettings {
 	const env = process.env.PI_ADVISOR_MODEL?.trim();
-	if (env) return { enabled: true, model: env };
+	if (env) return { enabled: true, model: env, vccCli: loadConfig().advisor?.vccCli };
 	const a = loadConfig().advisor;
 	if (!a || a.enabled === false) return { enabled: false };
-	if (a.model?.trim()) return { enabled: true, model: a.model.trim() };
+	if (a.model?.trim()) return { enabled: true, model: a.model.trim(), vccCli: a.vccCli };
 	if (a.enabled === true) return { enabled: false, missingModel: true };
 	return { enabled: false };
 }

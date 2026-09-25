@@ -9,6 +9,7 @@ import { Text } from "@earendil-works/pi-tui";
 export type LaunchFn = (
 	question: string,
 	context: string | undefined,
+	sessionFile?: string,
 ) => Promise<{
 	ok: boolean;
 	text: string;

@@ -39,9 +39,13 @@ export default async function (pi: ExtensionAPI) {
 	const advisor = resolveAdvisor();
 	if (advisor.enabled && advisor.model) {
 		const advisorModel = advisor.model;
-		setupAdvisor(pi, advisorModel, (question, context) =>
-			// 模型/thinking 完全由配置决定：这里只负责补 --model 预设（extraArgs 后值覆盖模式预设）
-			launchSub(pi, question, context, advisorMode, [`--model ${shQuote(advisorModel)}`]),
+		setupAdvisor(pi, advisorModel, (question, context, sessionFile) =>
+			// 模型/thinking 完全由配置决定：这里只负责补 --model 预设（extraArgs 后值覆盖模式预设）；
+			// sessionFile + vccCli 透传给简报的取证栏目（advisor 模式）
+			launchSub(pi, question, context, advisorMode, [`--model ${shQuote(advisorModel)}`], {
+				sessionFile,
+				vccCli: advisor.vccCli,
+			}),
 		);
 	} else if (advisor.missingModel) {
 		// 配了 enabled: true 但没配模型：不开启，直接在会话里提示用户补配置

@@ -11,7 +11,7 @@
  *   完成，见 session/web-bootstrap.ts，不属于本接口）
  */
 import { ENV_SUB_WEB } from "../core/env";
-import { buildAdvisorBrief, buildTaskBrief, buildWebResearchBrief } from "./briefs";
+import { type BriefOpts, buildAdvisorBrief, buildTaskBrief, buildWebResearchBrief } from "./briefs";
 import { advisorPresetFlags, webResearchPresetFlags } from "./presets";
 
 export type ModeName = "task" | "advisor" | "web-research";
@@ -19,7 +19,17 @@ export type ModeName = "task" | "advisor" | "web-research";
 export interface SubagentMode {
 	name: ModeName;
 	/** 子 agent 简报模板 */
-	brief(question: string, context: string | undefined, artifactPath: string, useWatchdog: boolean): string;
+	/**
+	 * 子 agent 简报模板。opts 可选：advisor 取证栏目用（task / web-research 忽略），
+	 * 见 BriefOpts（briefs.ts）。
+	 */
+	brief(
+		question: string,
+		context: string | undefined,
+		artifactPath: string,
+		useWatchdog: boolean,
+		opts?: BriefOpts,
+	): string;
 	/**
 	 * 子 agent pi 的预设 CLI flag（放在启动参数最前面；调用方 extraArgs 在后可覆盖
 	 * 同名单值 flag——pi 对 --model/--tools/--system-prompt 是后值覆盖前值）。
