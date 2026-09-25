@@ -45,7 +45,7 @@ export interface CompletionProfile {
 	kind: "watchdog" | "batch";
 	/** pi 启动命令前缀（不含 flags 与任务 prompt）：交互式为 "pi"，批处理为 "pi -p" */
 	piCommandPrefix: "pi" | "pi -p";
-	/** 追加在任务 prompt 之后的输出重定向（批处理重定向到 log；交互式无） */
+	/** 追加在任务 prompt 之后的输出重定向（批处理 stdout+stderr → log；交互式仅 stderr → log，stdout 留在 pane） */
 	outputRedirect: string;
 	/** watchdog 专属的 tmux -e 环境注入（已插值；批处理路径为空数组） */
 	extraEnvArgs: string[];
@@ -60,7 +60,10 @@ export function resolveCompletion(useWatchdog: boolean, paths: SubagentPaths): C
 		return {
 			kind: "watchdog",
 			piCommandPrefix: "pi",
-			outputRedirect: "",
+			// stderr 落盘：交互式 pi 的 stdout 必须留在 pane（用户围观），但启动期报错
+			// （如 --model 配置错、扩展加载失败）走 stderr 且进程立即退出，不留栈就没了
+			// ——表现为 exit=1 + 空回复 entry，根因无处可查。重定向 stderr 不影响 TUI。
+			outputRedirect: ` 2> ${paths.logPath}`,
 			extraEnvArgs: [
 				"-e",
 				"PI_WATCHDOG=timeout=5 max=50 mode=keep",
