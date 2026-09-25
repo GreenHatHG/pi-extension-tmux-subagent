@@ -75,7 +75,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 ## advisor（可选功能）
 
-`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog`。
+`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog`（配 `vccCli` 时另加 `bash`，只许跑 pi-vcc 只读取证，见下）。
 
 **默认不注册**：未配置时主模型看不到这个工具，promptGuidelines 也不注入（零开销）。开启即配置：
 
@@ -94,6 +94,14 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
   配了 `model` 即视为启用；`enabled: true` 而不配 `model` 则**不开**（advisor 的意义在更强的模型，沿用默认模型没有意义），pi 会在会话里提示补配置；`enabled: false` 显式关闭。
 
 优先级：`PI_ADVISOR_MODEL` 环境变量 > 配置文件 `model`。只配 `enabled: true` 而没有模型不会开启。模型/thinking 由配置决定，调用方不能通过参数传 `--model`。
+
+### 原始会话取证（可选，配 advisor.vccCli）
+
+配置里再加一个 `vccCli`（pi-vcc 独立 CLI 调用命令，如 `"pi-vcc"` 或 `"bun /path/to/pi-vcc/cli/main.ts"`）：
+
+- **启动时**：主会话在 advisor 运行目录预生成 `<运行目录>/vcc-summary.md`——shell 调用 `<vccCli> compact <主会话 jsonl>`（stdout 重定向落盘，不加 `--write`，不碰主会话 jsonl）；compact 失败（消息太少/bun 缺失/超时）不阻塞启动，简报降级。
+- **简报两级取证栏目**：① `read vcc-summary.md`（整段会话的 vcc 压缩摘要，全局视野）；② 按需 `<vccCli> recall <sessionFile> <关键词>` / `--expand N` 检索与展开原始输出（recall 用法说明内嵌在简报里）。未配 vccCli 时简报声明取证不可用。
+- **边界**：advisor 的 bash 只许跑 pi-vcc 的只读取证子命令，不许改文件/跑构建/探索文件系统（约束在系统提示词与简报中）。
 
 ## web_research（默认开启）
 
