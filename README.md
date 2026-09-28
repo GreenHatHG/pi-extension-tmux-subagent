@@ -75,7 +75,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 ## advisor（可选功能）
 
-`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog`（配 `vccCli` 时另加 `bash`，只许跑 pi-vcc 只读取证，见下）。
+`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog,bash`（bash 承担取证：配 `vccCli` 时有 L1 recall CLI；L3 只读核实特定工件恒可用，见下）。
 
 **默认不注册**：未配置时主模型看不到这个工具，promptGuidelines 也不注入（零开销）。开启即配置：
 
@@ -101,7 +101,9 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 - **启动时**：主会话在 advisor 运行目录预生成 `<运行目录>/vcc-summary.md`——shell 调用 `<vccCli> compact <主会话 jsonl>`（stdout 重定向落盘，不加 `--write`，不碰主会话 jsonl）；compact 失败（消息太少/bun 缺失/超时）不阻塞启动，简报降级。
 - **简报两级取证栏目**：① `read vcc-summary.md`（整段会话的 vcc 压缩摘要，全局视野）；② 按需 `<vccCli> recall <sessionFile> <关键词>` / `--expand N` 检索与展开原始输出（recall 用法说明内嵌在简报里）。未配 vccCli 时简报声明取证不可用。
-- **边界**：advisor 的 bash 只许跑 pi-vcc 的只读取证子命令，不许改文件/跑构建/探索文件系统（约束在系统提示词与简报中）。
+- **取证三级（系统提示词）**：L1 pi-vcc CLI（上栏）→ L2 `read` 具体文件 → L3 **只读 shell 核实特定工件**（`grep -n` / 行窗口 `sed -n 'A,Bp'`、`head -50`、`tail -30`；**不得 `cat` 整文件**，任何 L3 命令输出都必须限窗）。L3 仅在背景摘要声称了某工件行为、而 L1/L2 核实不了时启用（vendored/已安装库、生成或压缩代码、`read` 会截断的大文件），且禁写、禁构建/测试/联网——所以**边界是「只读核实 vs 任何写/执行」**，不是「是否碰文件系统」。此前的提示词曾写死 bash「ONLY for the pi-vcc CLI」并禁止探索文件系统，与实际有价值的行为（读已安装 pi 源码核实调用方对第三方库行为的声称）自相矛盾——那次运行靠模型「正确地不听话」才拿到结论，故改为显式三级。
+- **运行画像**：watchdog 收尾路径的简报会告知 advisor 处于自动催促监控下（约 5s 空闲一次，上限 50 次），催促不是人发话、工作未完继续即可——避免它把催促误当用户输入或自行加时钟预算（催促文本自身即等待预算）。
+- **边界**：advisor 的 bash 只做只读取证（L1 pi-vcc 子命令，或 L3 对特定工件的 `grep -n`/`sed -n`/`cat`），不许改文件/跑构建测试/联网（约束在系统提示词与简报中）。
 
 ## web_research（默认开启）
 
@@ -166,7 +168,7 @@ TMUX= tmux -L pi-sub capture-pane -t <会话名> -p | tail -30
 
 ### 完成阶段：读回交付物是唯一的大额回流
 
-任务完成后 `read result.md` 会把交付物全文写进主会话的对话。这是子 agent 的产出进入主会话的唯一通道，好处是子 agent 中间读过的文件、跑过的命令都不会带回来，坏处是如果 result.md 写得太长，主会话上下文会一下子变大。这个约束由扩展单方面保证：子 agent 的 brief（`buildBrief`）固定要求交付物「结论优先、克制篇幅」。
+任务完成后 `read result.md` 会把交付物全文写进主会话的对话。这是子 agent 的产出进入主会话的唯一通道，好处是子 agent 中间读过的文件、跑过的命令都不会带回来，坏处是如果 result.md 写得太长，主会话上下文会一下子变大。这个约束由扩展单方面保证：子 agent 的 brief（`buildTaskBrief` / `buildAdvisorBrief` / `buildWebResearchBrief`）固定要求交付物「结论优先、克制篇幅」。
 
 ### prompt cache 的利弊
 

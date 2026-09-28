@@ -45,7 +45,9 @@ ${completion}
 }
 
 /** advisor 模式的 brief 模板：只求判断，不求执行。useWatchdog = 收尾走 stop_watchdog（false 时 pi -p 跑完自动退出）。
- * 取证栏目两级（BriefOpts）：① 有预生成摘要 → read vcc-summary（全局视野）；② 按需用 recall CLI 检索/展开补细节。 */
+ * 取证栏目（BriefOpts）：① 有预生成摘要 → read vcc-summary（全局视野）；② 按需用 recall CLI 检索/展开补细节。
+ * 第三级（read 具体文件 / 只读 shell 核实工件）写在系统提示词里，见 presets.ts。
+ * watchdog 路径另裁一段运行画像（自动催促不是人发话）+ 建议的 result.md 结构。 */
 export function buildAdvisorBrief(
 	question: string,
 	context: string | undefined,
@@ -103,12 +105,13 @@ ${context?.trim() || "（无）"}
 ## 你要做的事
 - 给出判断：计划（具体下一步，按顺序）/ 纠偏（指出错误方向并重定向，说明理由）/ 停止信号（应停下上报用户）
 - 结论优先，克制篇幅；点名文件/函数/行号；标注未核实的内容
-- 上下文分两级取用：背景摘要覆盖主会话认为与问题相关的部分，通常已够判断；取证栏目（原始会话取证）是补充视野——摘要已预生成就读它，还缺细节才 recall。不问自取会拖慢咨询：question 本身已够判断时不要翻取证
+- 上下文分三级取用：背景摘要通常已够判断；取证栏目（recall CLI / vcc 摘要）是补充视野——摘要已预生成就读它，还缺细节才 recall；只有背景摘要声称了某工件行为、而摘要与 read 都核实不了时，才用只读 shell 核实该工件（见系统提示词的取证三级）。不问自取会拖慢咨询：question 本身已够判断时不要翻取证
 - 只在需要核实说法/补全细节时才 read 文件；不做任何实质修改（write 仅限交付物）
 
 ${recall}
 ## 交付物
 - 将完整建议写入 ${artifactPath}${finish}
+- 建议结构（便于主会话直接执行）：判断（计划 / 纠偏 / 停止信号）→ 已核实的关键事实（逐条点名 file:line）→ 对每个问题的直接回答 → 按顺序的执行计划 → 未核实项
 
 ## 边界
 - 你的工具只有 ${tools}，这是设计使然：你负责判断，执行属于主会话`;
