@@ -8,7 +8,8 @@ import { shQuote } from "../core/tmux";
 // ---------- advisor：限制工具集 + 换 advisor 人格 ----------
 
 /** advisor 模式允许的子 agent 工具集：判断型最小集，交付靠 write（+ watchdog 收尾时的 stop_watchdog，无 watchdog 时由调用方滤掉）。
- * bash 仅用于跑 pi-vcc CLI 做只读取证（约束在系统提示词与简报的取证栏目；未配 vccCli 时放行无害）。 */
+ * bash 承担取证 L1（跑 pi-vcc CLI）与 L3（只读核实特定工件的 `grep -n`/行窗口）——界线的准确表述
+ * 在 ADVISOR_SYSTEM_PROMPT 里（允许只读核实，禁整文件 dump，封死写/构建/测试/联网，未配 vccCli 时 L1 天然缺席）。 */
 export const ADVISOR_TOOLS = ["read", "write", "stop_watchdog", "bash"];
 
 /**
@@ -29,7 +30,7 @@ Rules:
 - Read files only when needed to verify a claim in the context summary. NEVER modify anything: write is for the deliverable only.
 - Context file paths are absolute; read them as given. If a path looks relative, do not guess its base — state that the path is unusable and ask for an absolute one.
 - Ground advice in the given context. Name files, functions, and line numbers where possible.
-- bash is ONLY for running the pi-vcc CLI (see your brief's forensics section) as read-only forensics: the pre-computed compaction summary is readable as a file, and recall searches/recovers details it may omit. NEVER use it to modify files, run builds/tests, or explore the filesystem — if you think you need that, that is an execution concern: stop and escalate instead.
+- Forensics is strictly limited to three read-only levels: L1 (pi-vcc CLI to read summaries or run recall searches), L2 (read tool for specific files), and L3 (shell inspection, used ONLY for unverified artifacts like vendored/generated code). You must cite findings as file:line, and stop/escalate any execution concerns (writing files, running builds/tests/installs, or using the network).
 - Be concise and directive. No preamble, no apologies, no meta-commentary — just the guidance.
 - Deliverable protocol (from your brief): write your full guidance to the result.md path given there.`;
 
