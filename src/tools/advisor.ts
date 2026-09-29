@@ -145,6 +145,17 @@ async function watchAdvisorResult(
 
 // ---------- 工具注册 ----------
 
+/** 把 pi 的 provider/model:thinking 配置转换为稳定的注册提示。 */
+function advisorRegistrationMessage(advisorModel: string): string {
+	const colon = advisorModel.lastIndexOf(":");
+	if (colon <= 0) return `advisor 已注册（模型：${advisorModel}）`;
+
+	const model = advisorModel.slice(0, colon);
+	const thinking = advisorModel.slice(colon + 1);
+	const thinkingNote = thinking ? `，思考档位：${thinking}` : "";
+	return `advisor 已注册（模型：${model}${thinkingNote}）`;
+}
+
 /**
  * 注册 advisor 工具。模型/thinking 预设由 index.ts 的 launch 回调负责（补 --model
  * 预设；advisor 模式/thinking 完全由配置决定，模型不可干预）；这里管工具定义与 TUI 呈现。
@@ -167,22 +178,20 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			note: "advisor 已注册时：session_start 提示模型与思考档位（解析 pi --model 格式串）",
 		},
 		(_event: unknown, ctx: { ui: { notify(text: string, level: string): void } }) => {
-			const colon = advisorModel.lastIndexOf(":");
-			const model = colon > 0 ? advisorModel.slice(0, colon) : advisorModel;
-			const thinking = colon > 0 ? advisorModel.slice(colon + 1) : undefined;
-			ctx.ui.notify(`advisor 已注册（模型：${model}${thinking ? `，思考档位：${thinking}` : ""}）`, "info");
+			ctx.ui.notify(advisorRegistrationMessage(advisorModel), "info");
 		},
 	);
 
 	pi.registerTool({
 		name: "advisor",
 		label: "咨询 advisor",
-		description:
-			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor has zero memory " +
-			"of this conversation — it only sees `question` and `context`, which must be self-contained (file paths, conclusions so far, " +
-			"constraints, URLs). Returns a plan, a correction, or a stop signal. The full advice is written to a system-generated " +
-			"path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response. " +
+		description: [
+			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor has zero memory",
+			"of this conversation — it only sees `question` and `context`, which must be self-contained (file paths, conclusions so far,",
+			"constraints, URLs). Returns a plan, a correction, or a stop signal. The full advice is written to a system-generated",
+			"path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response.",
 			"Do not put the deliverable path in `question` — the brief the advisor receives already carries it",
+		].join(" "),
 		promptSnippet:
 			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
 		// 取材 rpiv-advisor 的规则，按本项目「context 需自包含」的调用方式改写。
@@ -202,10 +211,11 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			}),
 			context: Type.Optional(
 				Type.String({
-					description:
-						"Self-contained context the advisor needs: file paths, function/line references, conclusions so far, constraints, URLs. " +
-						"File paths MUST be absolute (e.g. /Users/you/Projects/app/src/index.ts), never relative — the advisor cannot resolve them against your cwd. " +
+					description: [
+						"Self-contained context the advisor needs: file paths, function/line references, conclusions so far, constraints, URLs.",
+						"File paths MUST be absolute (e.g. /Users/you/Projects/app/src/index.ts), never relative — the advisor cannot resolve them against your cwd.",
 						"The advisor has zero memory of this conversation — anything not written here is unknown to it",
+					].join(" "),
 				}),
 			),
 		}),

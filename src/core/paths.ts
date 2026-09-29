@@ -18,9 +18,7 @@ const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
 /** 4 位 base36 随机后缀（约 168 万组合）：保证并发任务不撞会话/频道/目录名 */
 export function shortId(): string {
-	let id = "";
-	for (let i = 0; i < 4; i++) id += ID_ALPHABET[randomInt(ID_ALPHABET.length)];
-	return id;
+	return Array.from({ length: 4 }, () => ID_ALPHABET[randomInt(ID_ALPHABET.length)]).join("");
 }
 
 /** 子 agent 的会话名与运行时文件布局：/tmp/pi-sub-<session>/ 下 brief、交付物、exit、log */

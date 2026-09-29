@@ -11,10 +11,11 @@ export function setupSpawnSub(pi: ExtensionAPI, launch: LaunchFn): void {
 	pi.registerTool({
 		name: "spawn_sub",
 		label: "子 agent 委派",
-		description:
-			"Delegate a task to an isolated pi sub-agent; the full deliverable is written to a system-generated path " +
-			"(/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response. " +
+		description: [
+			"Delegate a task to an isolated pi sub-agent; the full deliverable is written to a system-generated path",
+			"(/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response.",
 			"Do not put the deliverable path in `question` — the brief the sub-agent receives already carries it",
+		].join(" "),
 		promptSnippet: "delegate multi-step or context-heavy tasks to an isolated tmux sub-agent",
 		// 只写调用前的决策信息（何时用、context 要自包含）。
 		// 调用后怎么拿结论（wait-for 频道名、exit 文件判读）依赖运行时才知道的值，
