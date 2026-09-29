@@ -14,11 +14,12 @@ export function setupWebResearch(pi: ExtensionAPI, launch: LaunchFn): void {
 	pi.registerTool({
 		name: "web_research",
 		label: "联网调研",
-		description:
-			"Delegate a web-research task to an isolated pi sub-agent in tmux. The sub-agent runs the web searches and " +
-			"page fetches itself; only distilled conclusions with source URLs enter this conversation. The full deliverable is " +
-			"written to a system-generated path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response. " +
+		description: [
+			"Delegate a web-research task to an isolated pi sub-agent in tmux. The sub-agent runs the web searches and",
+			"page fetches itself; only distilled conclusions with source URLs enter this conversation. The full deliverable is",
+			"written to a system-generated path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response.",
 			"Do not put the deliverable path in `question` — the brief the sub-agent receives already carries it",
+		].join(" "),
 		promptSnippet: "delegate web search/fetch to an isolated tmux sub-agent; only distilled conclusions return",
 		// 强导向：主会话默认不带任何联网工具（联网能力只存在于 web-research 子 agent），
 		// 一切搜索/抓取都必须走这里，防止原始网页内容进入主会话上下文。
@@ -34,9 +35,10 @@ export function setupWebResearch(pi: ExtensionAPI, launch: LaunchFn): void {
 			}),
 			context: Type.Optional(
 				Type.String({
-					description:
-						"Self-contained context the sub-agent needs: URLs, conclusions so far, user preferences or constraints. " +
+					description: [
+						"Self-contained context the sub-agent needs: URLs, conclusions so far, user preferences or constraints.",
 						"It has zero memory of this conversation — anything not written here is unknown to it",
+					].join(" "),
 				}),
 			),
 		}),

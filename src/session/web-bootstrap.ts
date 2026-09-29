@@ -108,10 +108,11 @@ function resolveWebAccessDir(): string | undefined {
 /**
  * 研究人格段：整形提示词时替换 pi 默认提示词的首段（编码助手人格）。
  */
-const WEB_RESEARCH_PERSONA =
-	"You are a web-research agent operating inside pi. Your brief contains one research question; " +
-	"answer it strictly from real results returned by your web tools. Read fetched pages yourself " +
-	"and distill findings into the deliverable with source URLs.";
+const WEB_RESEARCH_PERSONA = [
+	"You are a web-research agent operating inside pi. Your brief contains one research question;",
+	"answer it strictly from real results returned by your web tools. Read fetched pages yourself",
+	"and distill findings into the deliverable with source URLs.",
+].join(" ");
 
 /**
  * 换人格：把 pi 默认提示词的首段（编码助手人格）替换为研究人格。纯结构定位——取首个
@@ -122,7 +123,7 @@ function swapPersona(base: string, hasCustomPrompt: boolean): string {
 	if (hasCustomPrompt) return base;
 	const idx = base.indexOf("\n\n");
 	if (idx <= 0) return base;
-	return WEB_RESEARCH_PERSONA + base.slice(idx);
+	return `${WEB_RESEARCH_PERSONA}${base.slice(idx)}`;
 }
 
 /**
@@ -150,13 +151,15 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 	 * 例外：stop_watchdog 注册自 pi-watchdog 包，但它的包路径因安装方式而异（本地
 	 * checkout/npm），且就一个名字、极稳定 —— 按名单留，不解析路径。
 	 */
+	const builtinTools = new Set(["read", "bash", "edit", "write"]);
 	const shouldKeep = (tool: { name: string; sourceInfo?: { source?: string; path?: string } }): boolean => {
-		const { source, path } = tool.sourceInfo ?? {};
-		if (source === "builtin") return ["read", "bash", "edit", "write"].includes(tool.name);
-		if (tool.name === "stop_watchdog") return true;
-		if (webAccessToolNames.has(tool.name)) return true;
-		const p = path ?? "";
-		return webAccessDir !== undefined && p.startsWith(`${webAccessDir}/`);
+		const { source, path = "" } = tool.sourceInfo ?? {};
+		if (source === "builtin") return builtinTools.has(tool.name);
+		return (
+			tool.name === "stop_watchdog" ||
+			webAccessToolNames.has(tool.name) ||
+			(webAccessDir !== undefined && path.startsWith(`${webAccessDir}/`))
+		);
 	};
 
 	/**
@@ -216,9 +219,7 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 	const resolved = resolveWebAccessExtension();
 	let failure: string | undefined;
 	if ("tried" in resolved) {
-		failure =
-			`找不到 pi-web-access 扩展（依次尝试：${resolved.tried.join("；")}）。` +
-			"修复方式任选其一：pi install npm:pi-web-access 全局安装；或设置 PI_WEB_ACCESS_EXTENSION 指向其入口文件";
+		failure = `找不到 pi-web-access 扩展（依次尝试：${resolved.tried.join("；")}）。修复方式任选其一：pi install npm:pi-web-access 全局安装；或设置 PI_WEB_ACCESS_EXTENSION 指向其入口文件`;
 	} else {
 		try {
 			// jiti 的动态 import 已验证接受绝对路径（file URL 反而未验证，不引入）。

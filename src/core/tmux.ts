@@ -24,12 +24,19 @@ export function run(
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		onSpawn?.(proc);
-		let stdout = "";
-		let stderr = "";
-		proc.stdout.on("data", (d) => (stdout += d.toString()));
-		proc.stderr.on("data", (d) => (stderr += d.toString()));
-		proc.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
-		proc.on("error", (err) => resolve({ code: 1, stdout, stderr: stderr || String(err) }));
+		const stdout: Buffer[] = [];
+		const stderr: Buffer[] = [];
+		const readOutput = () => ({
+			stdout: Buffer.concat(stdout).toString(),
+			stderr: Buffer.concat(stderr).toString(),
+		});
+		proc.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+		proc.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+		proc.on("close", (code) => resolve({ code: code ?? 1, ...readOutput() }));
+		proc.on("error", (err) => {
+			const output = readOutput();
+			resolve({ code: 1, ...output, stderr: output.stderr || String(err) });
+		});
 	});
 }
 
