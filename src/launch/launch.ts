@@ -80,7 +80,8 @@ export interface LaunchResult {
 
 /** 常用运维命令速查：attach 围观 / 看进度 / 读交付物 / 等完成 / 杀会话，全部可直接复制粘贴 */
 function opsCheatsheet(session: string, artifactPath: string, exitFile: string, done: string): string {
-	return `# 围观子 agent（实时画面，Ctrl-b d 退出；任务完成后会话自动关闭，回看执行过程读 pi 会话历史 jsonl）
+	return `# 围观子 agent（实时画面；Ctrl-b d 退出，不影响子 agent；任务完成后会话自动关闭，回看执行过程读 pi 会话历史 jsonl）
+# 注意：手动在自己 tmux 里嵌套 attach，前缀会被外层先吃掉，Ctrl-b d 会 detach 整个 tmux；/attach 浮层没这问题
 tmux -L pi-sub attach -t ${session}
 
 # 看当前进度（不进入，只抓最后一屏）

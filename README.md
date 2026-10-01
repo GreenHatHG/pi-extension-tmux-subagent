@@ -66,7 +66,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 ### 注意事项
 
-- **查看子 agent 的执行过程**：两条路径下任务完成后会话都会自动关闭（watchdog 路径由 stop_watchdog 触发，-p 路径随进程退出）。想回看它做了什么，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。运行期间可以 attach 围观（`Ctrl-b d` 退出）。
+- **查看子 agent 的执行过程**：两条路径下任务完成后会话都会自动关闭（watchdog 路径由 stop_watchdog 触发，-p 路径随进程退出）。运行期间可以**实时围观**：主会话里输入 `/attach` 会弹出运行中的子 agent 列表（选一个即开浮层），或 `/attach <会话名>`（Tab 补全会话名）直接开——在你的 tmux 上弹一个 display-popup 浮层，attach 到那个子 agent 的 pane：真实画面、实时推进。退出用 `Ctrl-b d` 或 `Ctrl-c`（只关浮层，子 agent 继续跑）；浮层里前缀进内层，滚轮 / `Ctrl-b [` 可回看历史。注意这是普通 attach：`C-b x`/`&`/`:` 会真的杀掉会话、键盘也会打进 pane（要防误杀可把命令里的 `attach` 换成 `attach -r`，代价是只读模式下不能滚动）。子 agent 结束时浮层自动关闭（需 tmux ≥ 3.2，依赖 display-popup）。想回看已完成的，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。
 - **沙盒环境下的嵌套**：如果主会话的 pi 是在沙盒（如 SRT 限制）里启动的，子 agent 继承同样的环境，也会受沙盒限制（例如无法写 `~`、无法访问网络等）。
 
 ### 嵌套
@@ -129,18 +129,6 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 - 未全局安装（如本地开发路径）：靠动态加载。扩展路径依次尝试：环境变量 `PI_WEB_ACCESS_EXTENSION`（显式覆盖，设了就只信它）> Node 解析 `pi-web-access/package.json`（覆盖 npm 安装副本，入口读其 `pi.extensions[0]`）> 同级 checkout（本包与 pi-web-access 的本地副本并排放在同一目录）。全部失败不阻断启动，失败原因（含已尝试的位置与修复指引）注入子 agent 首回合，模型会把失败写进交付物并停止。
 
 主会话默认不带任何联网工具，一切搜索/抓取都走 `web_research`（工具 guideline 强导向），防止原始网页内容进入主会话上下文。任务模式的 `spawn_sub` 子 agent 不注入引导变量，保持无网；任务中途要搜的活儿由主会话拆给 `web_research`。
-
-## 子 agent 进度面板（默认开启，仅 TUI）
-
-主会话在 TUI 模式下常驻一个**默认折叠**的进度面板，实时显示 tmux 上所有子 agent（`spawn_sub` / `advisor` / `web_research`）在干什么；`/subagents` 在折叠/展开之间切换，页脚同时显示 `▶运行中 ✓完成 ✗失败` 计数。
-
-数据源就是 tmux 本身，不碰子 agent 代码、不注入环境变量、不新增运行时文件协议：
-
-- 存活会话名单来自 `tmux -L pi-sub list-sessions`（存活 = 运行中）；
-- 每个会话的进度来自 `tmux -L pi-sub capture-pane -p -t <会话>`——即人工 `tmux -L pi-sub attach` 看到的同一屏（取编辑器框之上的最后一条内容行）；
-- 会话结束后读既有 `/tmp/pi-sub-<会话>/exit` 判成败，在面板里保留约 5 秒再移除。
-
-折叠态每个运行中的子 agent 一行（会话名 + `│` + 最新活动），超过 8 个折叠成计数；展开态每个子 agent 回显屏幕尾部若干行。面板是纯显示增强，零 LLM token，不影响 `wait-for` / exit / pane-died 收尾协议；轮询失败静默重试。仅在交互式 TUI 模式启用（`-p` / json / rpc 模式零开销），默认每 1 秒轮询一次。想真正交互式围观，仍用 `tmux -L pi-sub attach -t <会话名>`（面板只是只读镜像，不替代 attach）。
 
 ## 上下文与 token 开销
 
