@@ -95,6 +95,20 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 优先级：`PI_ADVISOR_MODEL` 环境变量 > 配置文件 `model`。只配 `enabled: true` 而没有模型不会开启。模型/thinking 由配置决定，调用方不能通过参数传 `--model`。
 
+### 快捷设置（`/advisor` 命令）
+
+面板式配置：**开关 / 模型 / 思考档位**（`vccCli` 只读展示，改它请直接编辑 JSON）。命令**始终注册**——关掉 advisor 后仍能从这里把它打开。
+
+```
+/advisor
+```
+
+- **模型 / 思考档位：下次调用 advisor 生效**。advisor 每次调用都新起子进程并现读配置，所以面板改完不必重启；模型列表可在会话限定模型（`--models`/`enabledModels`）非空时取限定集，否则取全部已配 auth 的可用模型；输入即模糊搜索，非空且不等于任何候选时列表顶部给一条「使用自定义」以覆盖本地 catalogue 里没有的模型。思考档位行只列出该模型支持的档位（`reasoning: false` 只给 `off`；`thinkingLevelMap[level] === null` 视为不支持被剔除；`xhigh`/`max` 必须显式映射），模型不在本地 catalogue 时退化为列出全部；切换模型后若原思考档位不被新模型支持，会自动重置为模型默认。
+- **开关：下次启动 pi 生效**。工具是否注册在扩展加载时决定，本会话内无法即时增删。页脚状态会显示未生效的改动（如 `advisor:on →off(重启)`）。
+- 改动**即时写回** `~/.pi/agent/subagent_advisor.json`（读-改-写，保留 `vccCli` 与未知字段）。
+- 页脚常驻显示当前状态：开关取本会话已生效值，模型取下次调用将使用的值（如 `advisor:on · kimi-k3:max`）。
+- 设了环境变量 `PI_ADVISOR_MODEL` 时，它优先于配置文件：面板会明确警告，且不再显示基于文件开关的「重启后生效」箭头。
+
 ### 原始会话取证（可选，配 advisor.vccCli）
 
 配置里再加一个 `vccCli`（pi-vcc 独立 CLI 调用命令，如 `"pi-vcc"` 或 `"bun /path/to/pi-vcc/cli/main.ts"`）：
