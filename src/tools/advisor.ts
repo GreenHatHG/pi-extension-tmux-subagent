@@ -9,6 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { parseModelSpec } from "../core/config";
 import { runTmux } from "../core/tmux";
 import { onEvent } from "../registry";
 import { type LaunchFn, renderResultWithOps, startedToolResult } from "./shared";
@@ -147,20 +148,19 @@ async function watchAdvisorResult(
 
 /** 把 pi 的 provider/model:thinking 配置转换为稳定的注册提示。 */
 function advisorRegistrationMessage(advisorModel: string): string {
-	const colon = advisorModel.lastIndexOf(":");
-	if (colon <= 0) return `advisor 已注册（模型：${advisorModel}）`;
-
-	const model = advisorModel.slice(0, colon);
-	const thinking = advisorModel.slice(colon + 1);
+	const { model, thinking } = parseModelSpec(advisorModel);
+	if (!model) return `advisor 已注册（模型：${advisorModel}）`;
 	const thinkingNote = thinking ? `，思考档位：${thinking}` : "";
 	return `advisor 已注册（模型：${model}${thinkingNote}）`;
 }
 
 /**
- * 注册 advisor 工具。模型/thinking 预设由 index.ts 的 launch 回调负责（补 --model
- * 预设；advisor 模式/thinking 完全由配置决定，模型不可干预）；这里管工具定义与 TUI 呈现。
+ * 注册 advisor 工具。模型/thinking 由配置决定，不可通过工具参数干预：index.ts 的 launch
+ * 回调在**每次调用时**现读配置补 `--model`（/advisor 面板改完下次调用即生效），这里管工具
+ * 定义与 TUI 呈现。
  *
- * @param advisorModel pi --model 格式串（"provider/id:thinking"），仅用于 session_start 提示
+ * @param advisorModel 会话启动时解析出的 pi --model 串（"provider/id:thinking"）：用于 session_start
+ *                     提示，并作为调用时读不到配置的兜底
  * @param launch       index.ts 注入的启动回调（包一层 launchSub，mode = advisorMode）
  */
 export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: LaunchFn): void {

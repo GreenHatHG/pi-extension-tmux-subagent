@@ -8,18 +8,20 @@
  * - modes/：task / advisor / web-research 三种模式的全部差异（brief 模板、预设 flag、
  *   附加环境注入），launchSub 只面向 SubagentMode 接口
  * - launch/：子 agent 启动编排（launchSub，含 ops 速查/等待说明文案）
- * - tools/：主会话侧的三个工具（spawn_sub / advisor / web_research）
+ * - tools/：主会话侧的三个工具（spawn_sub / advisor / web_research）；advisor 的 /advisor
+ *   快捷设置命令与页脚状态在 tools/advisor-settings.ts（始终注册）
  * - session/：子 agent 进程内的门禁、自检与联网引导（PI_SUBAGENT=1 / PI_SUB_WEB=1
  *   时生效，与主会话分属两个执行上下文）
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveAdvisor } from "./core/config";
+import { resolveAdvisor, resolveAdvisorModel } from "./core/config";
 import { shQuote } from "./core/tmux";
 import { launchSub } from "./launch/launch";
 import { advisorMode, taskMode, webResearchMode } from "./modes/types";
 import { setupSelfCheck } from "./session/gate";
 import { bootstrapWebResearch } from "./session/web-bootstrap";
 import { notifyAdvisorMissingModel, setupAdvisor } from "./tools/advisor";
+import { setupAdvisorSettings } from "./tools/advisor-settings";
 import { setupSpawnSub } from "./tools/spawn-sub";
 import { setupWebResearch } from "./tools/web-research";
 
@@ -37,16 +39,19 @@ export default async function (pi: ExtensionAPI) {
 	// ---------- advisor（可选功能，默认不注册：未配置时主模型看不到这个工具） ----------
 	// enabled 蕴含 model 非空（resolveAdvisor 保证）：沿用默认模型就没有 advisor 的意义
 	const advisor = resolveAdvisor();
+	// 快捷设置命令始终注册（与 enabled 无关）：否则关掉 advisor 后就没有入口把它重新打开
+	setupAdvisorSettings(pi, { enabled: advisor.enabled, model: advisor.model });
 	if (advisor.enabled && advisor.model) {
-		const advisorModel = advisor.model;
-		setupAdvisor(pi, advisorModel, (question, context, sessionFile) =>
-			// 模型/thinking 完全由配置决定：这里只负责补 --model 预设（extraArgs 后值覆盖模式预设）；
-			// sessionFile + vccCli 透传给简报的取证栏目（advisor 模式）
-			launchSub(pi, question, context, advisorMode, [`--model ${shQuote(advisorModel)}`], {
+		const sessionModel = advisor.model;
+		setupAdvisor(pi, sessionModel, (question, context, sessionFile) => {
+			// 模型/思考档位每次调用现读配置（/advisor 面板改了下一次调用即生效）；
+			// 读不到（被清空）则回退会话启动时的模型。sessionFile + vccCli 透传给简报取证栏目。
+			const model = resolveAdvisorModel() ?? sessionModel;
+			return launchSub(pi, question, context, advisorMode, [`--model ${shQuote(model)}`], {
 				sessionFile,
 				vccCli: advisor.vccCli,
-			}),
-		);
+			});
+		});
 	} else if (advisor.missingModel) {
 		// 配了 enabled: true 但没配模型：不开启，直接在会话里提示用户补配置
 		notifyAdvisorMissingModel(pi);

@@ -1,25 +1,89 @@
 /**
- * advisor 配置读取（可选功能：默认关闭，显式配置才注册工具）。
- * 只负责「读 + 解析开关」，与工具定义（tools/advisor.ts）解耦。
+ * advisor 配置的读取与写入（可选功能：默认关闭，显式配置才注册工具）。
+ *
+ * - 读：resolveAdvisor() 解析开关与模型（扩展 load 时决定是否注册工具）；
+ *   resolveAdvisorModel() 只看模型串——advisor 每次调用都新起子进程，
+ *   所以 /advisor 面板改了模型/思考档位后，下次调用即生效。
+ * - 写：writeAdvisorConfig() 由 /advisor 面板调用，读-改-写，保留 vccCli 与未知键。
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-interface Config {
-	advisor?: { enabled?: boolean; model?: string; vccCli?: string };
+/** pi --model 串支持的思考档位（":" 后缀），与 pi 的 /thinking 档位一致 */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevelName = (typeof THINKING_LEVELS)[number];
+
+/** subagent_advisor.json 里 advisor 段落的字段（未知键保留写回） */
+export interface AdvisorFileConfig {
+	enabled?: boolean;
+	/** pi --model 串，形如 "provider/id" 或 "provider/id:high"（thinking 内嵌在后缀） */
+	model?: string;
+	/** pi-vcc 独立 CLI 调用命令（如 "pi-vcc" 或 "bun /path/to/pi-vcc/cli/main.ts"） */
+	vccCli?: string;
+	[key: string]: unknown;
 }
 
-/** 读 ~/.pi/agent/subagent_advisor.json（PI_CODING_AGENT_DIR 可重定向）；不存在/损坏 = 空配置 */
-function loadConfig(): Config {
-	const dir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-	const path = join(dir, "subagent_advisor.json");
+/** 整个配置文件（顶层未知键也保留写回） */
+interface Config {
+	advisor?: AdvisorFileConfig;
+	[key: string]: unknown;
+}
+
+/** pi 的 agent 目录（PI_CODING_AGENT_DIR 可重定向） */
+export function agentDir(): string {
+	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+}
+
+/** advisor 配置文件路径 */
+export function advisorConfigPath(): string {
+	return join(agentDir(), "subagent_advisor.json");
+}
+
+/** 读整个配置文件；不存在/损坏 = 空对象 */
+function readConfig(): Config {
+	const path = advisorConfigPath();
 	if (!existsSync(path)) return {};
 	try {
 		return JSON.parse(readFileSync(path, "utf8")) as Config;
 	} catch {
 		return {};
 	}
+}
+
+/** 只读 advisor 段落（/advisor 面板展示用，不含默认值） */
+export function readAdvisorFileConfig(): AdvisorFileConfig {
+	return readConfig().advisor ?? {};
+}
+
+/** 从 pi --model 串拆出模型与思考档位；后缀不是已知档位则整串当作模型 */
+export function parseModelSpec(spec: string | undefined): { model: string; thinking?: ThinkingLevelName } {
+	const s = spec?.trim();
+	if (!s) return { model: "" };
+	const i = s.lastIndexOf(":");
+	if (i <= 0) return { model: s };
+	const tail = s.slice(i + 1);
+	if ((THINKING_LEVELS as readonly string[]).includes(tail)) {
+		return { model: s.slice(0, i), thinking: tail as ThinkingLevelName };
+	}
+	return { model: s };
+}
+
+/** 组装 pi --model 串（thinking 为空则不加后缀） */
+export function formatModelSpec(model: string, thinking?: string): string {
+	const m = model.trim();
+	return thinking ? `${m}:${thinking}` : m;
+}
+
+/**
+ * 只解析模型串（环境变量 PI_ADVISOR_MODEL > 配置文件），不看 enabled：
+ * advisor 已注册时，模型/思考档位的改动下次调用即生效。
+ */
+export function resolveAdvisorModel(): string | undefined {
+	const env = process.env.PI_ADVISOR_MODEL?.trim();
+	if (env) return env;
+	const m = readAdvisorFileConfig().model?.trim();
+	return m || undefined;
 }
 
 export interface AdvisorSettings {
@@ -43,11 +107,31 @@ export interface AdvisorSettings {
  * - 其余情况（含 advisor.enabled === false、无配置）→ 关，不提示
  */
 export function resolveAdvisor(): AdvisorSettings {
+	const a = readAdvisorFileConfig();
 	const env = process.env.PI_ADVISOR_MODEL?.trim();
-	if (env) return { enabled: true, model: env, vccCli: loadConfig().advisor?.vccCli };
-	const a = loadConfig().advisor;
-	if (!a || a.enabled === false) return { enabled: false };
+	if (env) return { enabled: true, model: env, vccCli: a.vccCli };
+	if (a.enabled === false) return { enabled: false };
 	if (a.model?.trim()) return { enabled: true, model: a.model.trim(), vccCli: a.vccCli };
 	if (a.enabled === true) return { enabled: false, missingModel: true };
 	return { enabled: false };
+}
+
+/**
+ * 写回 advisor 配置（读-改-写，保留 vccCli 与未知键）。
+ * `model` 传 null 或空串表示删除该字段。目录不存在则创建；先写临时文件再 rename。
+ */
+export function writeAdvisorConfig(patch: { enabled?: boolean; model?: string | null }): void {
+	const path = advisorConfigPath();
+	const cfg = readConfig();
+	const advisor: AdvisorFileConfig = { ...(cfg.advisor ?? {}) };
+	if (patch.enabled !== undefined) advisor.enabled = patch.enabled;
+	if (patch.model !== undefined) {
+		if (patch.model) advisor.model = patch.model;
+		else delete advisor.model;
+	}
+	cfg.advisor = advisor;
+	mkdirSync(dirname(path), { recursive: true });
+	const tmp = `${path}.tmp-${process.pid}`;
+	writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+	renameSync(tmp, path);
 }
