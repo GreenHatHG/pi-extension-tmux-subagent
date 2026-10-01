@@ -130,6 +130,18 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 主会话默认不带任何联网工具，一切搜索/抓取都走 `web_research`（工具 guideline 强导向），防止原始网页内容进入主会话上下文。任务模式的 `spawn_sub` 子 agent 不注入引导变量，保持无网；任务中途要搜的活儿由主会话拆给 `web_research`。
 
+## 子 agent 进度面板（默认开启，仅 TUI）
+
+主会话在 TUI 模式下常驻一个**默认折叠**的进度面板，实时显示 tmux 上所有子 agent（`spawn_sub` / `advisor` / `web_research`）在干什么；`/subagents` 在折叠/展开之间切换，页脚同时显示 `▶运行中 ✓完成 ✗失败` 计数。
+
+数据源就是 tmux 本身，不碰子 agent 代码、不注入环境变量、不新增运行时文件协议：
+
+- 存活会话名单来自 `tmux -L pi-sub list-sessions`（存活 = 运行中）；
+- 每个会话的进度来自 `tmux -L pi-sub capture-pane -p -t <会话>`——即人工 `tmux -L pi-sub attach` 看到的同一屏（取编辑器框之上的最后一条内容行）；
+- 会话结束后读既有 `/tmp/pi-sub-<会话>/exit` 判成败，在面板里保留约 5 秒再移除。
+
+折叠态每个运行中的子 agent 一行（会话名 + `│` + 最新活动），超过 8 个折叠成计数；展开态每个子 agent 回显屏幕尾部若干行。面板是纯显示增强，零 LLM token，不影响 `wait-for` / exit / pane-died 收尾协议；轮询失败静默重试。仅在交互式 TUI 模式启用（`-p` / json / rpc 模式零开销），默认每 1 秒轮询一次。想真正交互式围观，仍用 `tmux -L pi-sub attach -t <会话名>`（面板只是只读镜像，不替代 attach）。
+
 ## 上下文与 token 开销
 
 ### 常驻开销（每次对话都在）
