@@ -49,8 +49,8 @@ export function runTmux(
 }
 
 /**
- * 列出 pi-sub socket 上所有存活会话名（只读镜像面板用，tmux 是唯一真相源：
- * 存活会话 = 正在运行的子 agent）。server 未起 / 无会话时返回空数组。
+ * 列出 pi-sub socket 上所有存活会话名（tmux 是唯一真相源：存活会话 = 正在运行的
+ * 子 agent）。server 未起 / 无会话时返回空数组。
  */
 export async function listSubagentSessions(): Promise<string[]> {
 	const r = await runTmux(["list-sessions", "-F", "#{session_name}"]);
@@ -64,6 +64,7 @@ export async function listSubagentSessions(): Promise<string[]> {
 /**
  * 抓取某个会话 pane 的当前可见屏幕。`-p` 输出纯文本（不带 ANSI 属性），
  * 与人工 `tmux -L pi-sub attach` 看到的是同一屏。会话已结束时 code !== 0。
+ * /attach 的选择列表用它取每个会话的最后一行作预览。
  */
 export function captureSubagentPane(session: string): Promise<{ code: number; stdout: string; stderr: string }> {
 	return runTmux(["capture-pane", "-p", "-t", session]);

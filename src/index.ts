@@ -10,7 +10,7 @@
  * - launch/：子 agent 启动编排（launchSub，含 ops 速查/等待说明文案）
  * - tools/：主会话侧的三个工具（spawn_sub / advisor / web_research）；advisor 的 /advisor
  *   快捷设置命令与页脚状态在 tools/advisor-settings.ts（始终注册）
- * - ui/：主会话 TUI 呈现（子 agent 进度面板，轮询 tmux capture-pane 渲染折叠 widget）
+ * - ui/：主会话 TUI 呈现（/attach 实时围观窗口，attach 到 pi-sub 上的子 agent pane）
  * - session/：子 agent 进程内的门禁、自检与联网引导（PI_SUBAGENT=1 / PI_SUB_WEB=1
  *   时生效，与主会话分属两个执行上下文）
  */
@@ -25,7 +25,7 @@ import { notifyAdvisorMissingModel, setupAdvisor } from "./tools/advisor";
 import { setupAdvisorSettings } from "./tools/advisor-settings";
 import { setupSpawnSub } from "./tools/spawn-sub";
 import { setupWebResearch } from "./tools/web-research";
-import { setupSubagentPad } from "./ui/subagent-pad";
+import { setupAttachCommand } from "./ui/attach-command";
 
 export default async function (pi: ExtensionAPI) {
 	// web-research 子 agent 引导：必须在 setupSelfCheck 的子 agent 提前 return 之前执行。
@@ -38,9 +38,10 @@ export default async function (pi: ExtensionAPI) {
 	// 按 PI_WATCHDOG 注入与否决定，见 session/gate.ts。
 	if (setupSelfCheck(pi)) return;
 
-	// ---------- 子 agent 进度面板（主会话 TUI 只读镜像，默认折叠）----------
-	// 直接读 tmux（list-sessions + capture-pane），不依赖子 agent 侧任何埋点。
-	setupSubagentPad(pi);
+	// ---------- /attach 实时围观窗口 ----------
+	// 在用户自己的 tmux 里 new-window，attach 到 pi-sub 的某个子 agent 会话：
+	// 主会话侧查看子 agent 执行过程的唯一入口（真实画面、可交互、随时 detach）。
+	setupAttachCommand(pi);
 
 	// ---------- advisor（可选功能，默认不注册：未配置时主模型看不到这个工具） ----------
 	// enabled 蕴含 model 非空（resolveAdvisor 保证）：沿用默认模型就没有 advisor 的意义
