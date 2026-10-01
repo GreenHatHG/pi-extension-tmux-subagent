@@ -186,11 +186,11 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 		name: "advisor",
 		label: "咨询 advisor",
 		description: [
-			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor has zero memory",
-			"of this conversation — it only sees `question` and `context`, which must be self-contained (file paths, conclusions so far,",
-			"constraints, URLs). Returns a plan, a correction, or a stop signal. The full advice is written to a system-generated",
-			"path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response.",
-			"Do not put the deliverable path in `question` — the brief the advisor receives already carries it",
+			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor is isolated:",
+			"it sees `question` and `context` (your claims, not established facts) and, when advisor.vccCli is configured, a read-only",
+			"vcc summary of this session plus recall access to the full transcript. Returns a plan, a correction, or a stop signal.",
+			"The full advice is written to a system-generated path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the",
+			"tool response. Do not put the deliverable path in `question` — the brief the advisor receives already carries it",
 		].join(" "),
 		promptSnippet:
 			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
@@ -199,6 +199,7 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			"advisor: call BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption; orientation (finding files, fetching a source, seeing what's there) is not substantive work.",
 			"advisor: also call when stuck (errors recurring, approach not converging, results that don't fit) or when considering a change of approach.",
 			"advisor: call when you believe the task is complete — make the deliverable durable FIRST (write the file, save the result), because the advisor call takes time and a durable result survives a session that ends mid-call.",
+			"advisor: write `context` as claims under audit, not established facts — state your plan/interpretation, mark which premises you verified and which you are assuming; the advisor is instructed to verify load-bearing unverified premises itself and to override your framing where the session record disagrees.",
 			"advisor: every file path inside the context parameter MUST be absolute — resolve relative paths against your cwd before calling.",
 			"advisor: give its advice serious weight — if a step fails empirically or evidence contradicts a specific claim, surface the conflict in another advisor call instead of silently switching branches.",
 			"advisor: after each result, restate its key guidance in your next visible reply to the user — they often cannot see collapsed tool results. The full advice lives in the result.md path given in the tool response: wait for completion as instructed there, read the file, then restate what it actually says.",
@@ -212,9 +213,10 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			context: Type.Optional(
 				Type.String({
 					description: [
-						"Self-contained context the advisor needs: file paths, function/line references, conclusions so far, constraints, URLs.",
+						"Your claims under audit, not established facts: the plan/interpretation you want reviewed plus the key premises behind it (file paths, function/line references, constraints, URLs).",
+						"Mark what you verified and what you are assuming — the advisor is instructed to verify load-bearing unverified premises itself and to override your framing where the session record disagrees.",
 						"File paths MUST be absolute (e.g. /Users/you/Projects/app/src/index.ts), never relative — the advisor cannot resolve them against your cwd.",
-						"The advisor has zero memory of this conversation — anything not written here is unknown to it",
+						"Anything not stated here is unknown to the advisor (except, when advisor.vccCli is configured, the read-only session forensics above)",
 					].join(" "),
 				}),
 			),
