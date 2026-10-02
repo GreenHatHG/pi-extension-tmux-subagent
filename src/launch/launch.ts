@@ -17,7 +17,7 @@ import {
 	resolveCompletion,
 } from "../completion/profile";
 import { kebab, resolvePaths, type SubagentPaths, shortId } from "../core/paths";
-import { runTmux, SOCKET } from "../core/tmux";
+import { runTmux, SOCKET, styleSubagentSession } from "../core/tmux";
 import { type SubagentMode, taskMode } from "../modes/types";
 import { runVccCompact, type VccSummary } from "../modes/vcc";
 
@@ -80,8 +80,8 @@ export interface LaunchResult {
 
 /** 常用运维命令速查：attach 围观 / 看进度 / 读交付物 / 等完成 / 杀会话，全部可直接复制粘贴 */
 function opsCheatsheet(session: string, artifactPath: string, exitFile: string, done: string): string {
-	return `# 围观子 agent（实时画面；Ctrl-b d 退出，不影响子 agent；任务完成后会话自动关闭，回看执行过程读 pi 会话历史 jsonl）
-# 注意：手动在自己 tmux 里嵌套 attach，前缀会被外层先吃掉，Ctrl-b d 会 detach 整个 tmux；/attach 浮层没这问题
+	return `# 围观子 agent（实时画面；推荐在主会话里 /attach 开浮层——浮层内按前缀键 d 退出，只 detach、不影响子 agent；任务完成后会话自动关闭，回看执行过程读 pi 会话历史 jsonl）
+# 注意：手动在自己 tmux 里嵌套 attach，前缀会被外层先吃掉——Ctrl-b d 会 detach 整个 tmux；要退出内层需连按两次前缀（Ctrl-b Ctrl-b d），或直接用 /attach 浮层
 tmux -L pi-sub attach -t ${session}
 
 # 看当前进度（不进入，只抓最后一屏）
@@ -196,6 +196,10 @@ export async function launchSub(
 	if (launch.code !== 0) {
 		return { ok: false, text: `tmux 启动失败：${launch.stderr || launch.stdout}` };
 	}
+
+	// 围观浮层外观：给子会话染一套与主 tmux 明显不同的 status 栏，并常驻退出提示。
+	// 纯装饰，失败（runTmux 内部已吞错）只是没染色，绝不影响子 agent 启动。
+	await styleSubagentSession(paths.session);
 
 	const hookError = await registerPaneDiedHook(paths);
 	if (hookError) {
