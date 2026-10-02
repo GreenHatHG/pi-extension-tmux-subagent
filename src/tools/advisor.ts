@@ -151,7 +151,7 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			// 传给 launch 写进简报的取证栏目（recall CLI 以路径为参数，无需环境变量注入）；
 			// 首条消息落盘前可能为 undefined，简报会声明取证不可用。
 			const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
-			const r = await launch(params.question, params.context, sessionFile);
+			const r = await launch(params.question, params.context, sessionFile, ctx.sessionManager.getSessionId());
 			if (r.ok) {
 				// 简报 + 完成后回复都只进 TUI（appendEntry，不进 LLM 上下文），
 				// 等待/读取协议不受影响（见 ui/subagent-entries.ts）。

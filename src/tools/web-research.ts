@@ -44,8 +44,8 @@ export function setupWebResearch(pi: ExtensionAPI, launch: LaunchFn): void {
 				}),
 			),
 		}),
-		async execute(_toolCallId, params) {
-			const r = await launch(params.question, params.context);
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const r = await launch(params.question, params.context, undefined, ctx.sessionManager.getSessionId());
 			if (r.ok) {
 				// 简报 + 完成后回复都只进 TUI（appendEntry，不进 LLM 上下文），
 				// 等待/读取协议不受影响（见 ui/subagent-entries.ts）。

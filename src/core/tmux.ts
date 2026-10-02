@@ -49,15 +49,28 @@ export function runTmux(
 }
 
 /**
- * 列出 pi-sub socket 上所有存活会话名（tmux 是唯一真相源：存活会话 = 正在运行的
- * 子 agent）。server 未起 / 无会话时返回空数组。
+ * 列出当前主会话所属的存活子 agent 会话。
+ *
+ * pi-sub 是跨主会话共享的专用 socket，因此不能把 list-sessions 的结果直接
+ * 当成当前对话的子 agent。启动时会把主会话 ID写入 tmux session option，
+ * 这里用同一字段过滤；没有归属标记的旧会话也不会误显示。
  */
-export async function listSubagentSessions(): Promise<string[]> {
-	const r = await runTmux(["list-sessions", "-F", "#{session_name}"]);
+export async function listSubagentSessions(parentSessionId: string): Promise<string[]> {
+	if (!parentSessionId) return [];
+	const r = await runTmux(["list-sessions", "-F", "#{session_name}\t#{@pi-sub-parent-session}"]);
 	if (r.code !== 0) return [];
 	return r.stdout
 		.split("\n")
-		.map((s) => s.trim())
+		.filter(Boolean)
+		.map((line) => {
+			// owner 恒为格式串的最后一个字段；session 名若含 tab，其余段要 join 回去，
+			// 否则 owner 会取到名字碎片，该会话会被永久漏掉。
+			const parts = line.split("\t");
+			const owner = parts.pop();
+			return { session: parts.join("\t").trim(), owner };
+		})
+		.filter(({ owner }) => owner === parentSessionId)
+		.map(({ session }) => session)
 		.filter(Boolean);
 }
 

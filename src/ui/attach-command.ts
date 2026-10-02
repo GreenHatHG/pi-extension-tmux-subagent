@@ -24,6 +24,7 @@
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { captureSubagentPane, listSubagentSessions, run, SOCKET, shQuote, subagentPrefixHint } from "../core/tmux";
+import { onEvent } from "../registry";
 
 /**
  * 解析 /attach 所在 client 的 tty：popup 是 per-client 的，多终端时必须开在正确的终端上。
@@ -124,13 +125,23 @@ function popupMsg(name: string, prefix: string): string {
 
 async function listLine(session: string): Promise<string> {
 	const cap = await captureSubagentPane(session);
-	const last = cap.code === 0 ? (cap.stdout.trim().split("\n").filter(Boolean).pop() ?? "") : "";
+	const lines =
+		cap.code === 0
+			? cap.stdout
+					.trim()
+					.split("\n")
+					.map((line) => line.trim())
+					.filter(Boolean)
+			: [];
+	// bash-guard 是主 pane 的安全状态栏，不是子 agent 的任务进度；把它
+	// 从预览中排除，避免每一项都被 `🛡 bash-guard ⏱▶ 0/50` 占据。
+	const last = [...lines].reverse().find((line) => !/bash-guard/i.test(line)) ?? "";
 	return `${session}${last ? `  │ ${last}` : "（暂无内容）"}`;
 }
 
-/** 无参数时：用可滚动选择器列出运行中的子 agent，选中即开浮层 attach。避免 console.log 弄脏 TUI 渲染 */
+/** 无参数时：用可滚动选择器列出当前对话的子 agent，选中即开浮层 attach。避免 console.log 弄脏 TUI 渲染 */
 async function pickSession(ctx: ExtensionCommandContext): Promise<void> {
-	const sessions = await listSubagentSessions();
+	const sessions = await listSubagentSessions(ctx.sessionManager.getSessionId());
 	if (sessions.length === 0) {
 		ctx.ui.notify("当前没有运行中的子 agent", "info");
 		return;
@@ -145,10 +156,26 @@ async function pickSession(ctx: ExtensionCommandContext): Promise<void> {
 }
 
 export function setupAttachCommand(pi: ExtensionAPI): void {
+	// 参数补全 API 没有传 ExtensionCommandContext，因此缓存当前会话 ID；
+	// 无参数列表和实际 handler 则直接从 ctx 读取，始终以当前会话为准。
+	let currentSessionId: string | undefined;
+	onEvent(
+		pi,
+		"session_start",
+		{
+			where: "ui/attach-command.ts:当前会话过滤",
+			note: "记录当前主会话 ID，/attach 参数补全只显示该对话启动的子 agent",
+		},
+		(_event: unknown, ctx: { sessionManager: { getSessionId(): string } }) => {
+			currentSessionId = ctx.sessionManager.getSessionId();
+		},
+	);
+
 	pi.registerCommand("attach", {
-		description: "在浮层里围观某个子 agent（真实画面，前缀键 d 退出，不影响子 agent）；无参数弹出运行中的列表选择",
+		description:
+			"在浮层里围观当前对话的子 agent（真实画面，前缀键 d 退出，不影响子 agent）；无参数弹出运行中的列表选择",
 		getArgumentCompletions: async () => {
-			const sessions = await listSubagentSessions();
+			const sessions = await listSubagentSessions(currentSessionId ?? "");
 			return sessions.map((value) => ({ value, label: value, description: "围观该子 agent" }));
 		},
 		handler: async (args, ctx) => {
@@ -168,7 +195,7 @@ export function setupAttachCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const sessions = await listSubagentSessions();
+			const sessions = await listSubagentSessions(ctx.sessionManager.getSessionId());
 			if (!sessions.includes(name)) {
 				ctx.ui.notify(`会话 ${name} 不存在或已结束。运行中：${sessions.join(", ") || "(无)"}`, "warning");
 				return;

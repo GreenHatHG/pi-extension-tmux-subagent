@@ -143,6 +143,8 @@ export async function launchSub(
 		/** advisor 取证：主会话 jsonl 路径与 pi-vcc CLI 调用命令，透传给简报的取证栏目 */
 		sessionFile?: string;
 		vccCli?: string;
+		/** 启动该子 agent 的主会话 ID；由工具执行上下文提供。 */
+		parentSessionId?: string;
 	},
 ): Promise<LaunchResult> {
 	if (!question.trim()) {
@@ -150,6 +152,10 @@ export async function launchSub(
 	}
 
 	const useWatchdog = isWatchdogAvailable(pi);
+	const parentSessionId = opts?.parentSessionId;
+	if (!parentSessionId) {
+		return { ok: false, text: "无法确定当前主会话，未启动子 agent。" };
+	}
 	const paths = resolvePaths(`${kebab(question)}-${shortId()}`);
 	const completion = resolveCompletion(useWatchdog, paths);
 
@@ -196,6 +202,10 @@ export async function launchSub(
 	if (launch.code !== 0) {
 		return { ok: false, text: `tmux 启动失败：${launch.stderr || launch.stdout}` };
 	}
+
+	// 再写一份 tmux session option：list-sessions 可一次性带出归属，不必逐个
+	// show-environment；启动期环境变量仍供子 agent 进程使用。
+	await runTmux(["set-option", "-t", paths.session, "@pi-sub-parent-session", parentSessionId]);
 
 	// 围观浮层外观：给子会话染一套与主 tmux 明显不同的 status 栏，并常驻退出提示。
 	// 纯装饰，失败（runTmux 内部已吞错）只是没染色，绝不影响子 agent 启动。

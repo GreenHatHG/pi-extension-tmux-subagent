@@ -10,6 +10,7 @@ export type LaunchFn = (
 	question: string,
 	context: string | undefined,
 	sessionFile?: string,
+	parentSessionId?: string,
 ) => Promise<{
 	ok: boolean;
 	text: string;
