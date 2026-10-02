@@ -7,6 +7,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { webResearchMode } from "../modes/types";
+import { showSubagentBrief, watchSubagentReply } from "../ui/subagent-entries";
 import { type LaunchFn, renderResultWithOps, startedToolResult } from "./shared";
 
 /** 注册 web_research 工具（默认开启，无配置门槛） */
@@ -44,6 +46,12 @@ export function setupWebResearch(pi: ExtensionAPI, launch: LaunchFn): void {
 		}),
 		async execute(_toolCallId, params) {
 			const r = await launch(params.question, params.context);
+			if (r.ok) {
+				// 简报 + 完成后回复都只进 TUI（appendEntry，不进 LLM 上下文），
+				// 等待/读取协议不受影响（见 ui/subagent-entries.ts）。
+				showSubagentBrief(pi, r, webResearchMode.display);
+				watchSubagentReply(pi, r, webResearchMode.display);
+			}
 			return startedToolResult(r.text, r.ops);
 		},
 		renderResult(result, _options, theme, _context) {

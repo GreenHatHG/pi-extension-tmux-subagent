@@ -14,7 +14,7 @@ export type LaunchFn = (
 	ok: boolean;
 	text: string;
 	ops?: string;
-	/** 简报原文（advisor 模式 appendEntry 纯显示用） */
+	/** 简报原文（主会话 appendEntry 纯显示用，见 ui/subagent-entries.ts） */
 	brief?: string;
 	artifactPath?: string;
 	exitFile?: string;
