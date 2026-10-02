@@ -86,7 +86,8 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
   {
     "advisor": {
       "model": "anthropic/claude-opus-4-6:high",
-      "enabled": true
+      "enabled": true,
+      "disabledModels": ["openai/gpt-4o", "google/gemini-2.5-flash-*", "kimi-k2"]
     }
   }
   ```
@@ -94,6 +95,13 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
   配了 `model` 即视为启用；`enabled: true` 而不配 `model` 则**不开**（advisor 的意义在更强的模型，沿用默认模型没有意义），pi 会在会话里提示补配置；`enabled: false` 显式关闭。
 
 优先级：`PI_ADVISOR_MODEL` 环境变量 > 配置文件 `model`。只配 `enabled: true` 而没有模型不会开启。模型/thinking 由配置决定，调用方不能通过参数传 `--model`。
+
+按主模型禁用可在 `advisor.disabledModels` 配置：
+
+- 带 `/` 的项匹配完整的 `provider/id`，不带 `/` 的项只匹配模型 `id`；支持 `*` 通配符，匹配不区分大小写。
+- 例如 `"openai/gpt-4o"`、`"google/gemini-2.5-flash-*"`、`"kimi-k2"`。主模型的 thinking 档位不参与匹配。
+- 命中后 advisor 工具会被移出当前会话的 active tools，页脚显示 `advisor:off（主模型禁用）`；切换到未命中的主模型后会在下一轮恢复。
+- `PI_ADVISOR_MODEL` 仍只负责指定 advisor 子 agent 的模型，`disabledModels` 对当前主模型的过滤仍然生效。
 
 ### 快捷设置（`/advisor` 命令）
 

@@ -19,6 +19,8 @@ export interface AdvisorFileConfig {
 	enabled?: boolean;
 	/** pi --model 串，形如 "provider/id" 或 "provider/id:high"（thinking 内嵌在后缀） */
 	model?: string;
+	/** 当前主模型命中任一项时不启用 advisor；支持 * 通配符，也支持只写模型 id */
+	disabledModels?: string[];
 	/** pi-vcc 独立 CLI 调用命令（如 "pi-vcc" 或 "bun /path/to/pi-vcc/cli/main.ts"） */
 	vccCli?: string;
 	[key: string]: unknown;
@@ -75,6 +77,42 @@ export function formatModelSpec(model: string, thinking?: string): string {
 	return thinking ? `${m}:${thinking}` : m;
 }
 
+/** 通配匹配配置中的模型 pattern；只支持 *，其余字符按字面量处理。 */
+function wildcardModelMatch(value: string, pattern: string): boolean {
+	const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`^${escaped.replace(/\*/g, ".*")}$`, "i").test(value);
+}
+
+/**
+ * 判断主模型是否命中 advisor.disabledModels。
+ * 带 `/` 的 pattern 匹配完整的 provider/id；不带 `/` 的 pattern 只匹配 id。
+ * 匹配不区分大小写，主模型的 thinking 后缀不参与匹配。
+ */
+export function isModelDisabled(patterns: readonly unknown[] | undefined, modelSpec: string | undefined): boolean {
+	const model = parseModelSpec(modelSpec).model.toLowerCase();
+	if (!model || !patterns) return false;
+	const slash = model.indexOf("/");
+	const modelId = slash >= 0 ? model.slice(slash + 1) : model;
+	const fullModel = slash >= 0 ? model : `/${model}`;
+	for (const raw of patterns) {
+		if (typeof raw !== "string") continue;
+		const pattern = raw.trim().toLowerCase();
+		if (!pattern) continue;
+		if (pattern.includes("/")) {
+			if (wildcardModelMatch(fullModel, pattern)) return true;
+		} else if (wildcardModelMatch(modelId, pattern)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function normalizeDisabledModels(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const models = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+	return models.length > 0 ? models : undefined;
+}
+
 /**
  * 只解析模型串（环境变量 PI_ADVISOR_MODEL > 配置文件），不看 enabled：
  * advisor 已注册时，模型/思考档位的改动下次调用即生效。
@@ -90,6 +128,8 @@ export interface AdvisorSettings {
 	enabled: boolean;
 	/** advisor 模型（pi --model 格式，如 "provider/id:high"）；undefined 不会沿用默认模型，而是不开 advisor（enabled: true 时提示补配置） */
 	model?: string;
+	/** 当前主模型命中时禁用 advisor 的 pattern 列表 */
+	disabledModels?: string[];
 	/** 配了 enabled: true 但没配模型：不开，由 session_start 提示用户补配置 */
 	missingModel?: boolean;
 	/** pi-vcc 独立 CLI 调用命令（如 "bun /path/to/pi-vcc/cli/main.ts"；若已全局安装可填 "pi-vcc"）。
@@ -108,12 +148,13 @@ export interface AdvisorSettings {
  */
 export function resolveAdvisor(): AdvisorSettings {
 	const a = readAdvisorFileConfig();
+	const disabledModels = normalizeDisabledModels(a.disabledModels);
 	const env = process.env.PI_ADVISOR_MODEL?.trim();
-	if (env) return { enabled: true, model: env, vccCli: a.vccCli };
-	if (a.enabled === false) return { enabled: false };
-	if (a.model?.trim()) return { enabled: true, model: a.model.trim(), vccCli: a.vccCli };
-	if (a.enabled === true) return { enabled: false, missingModel: true };
-	return { enabled: false };
+	if (env) return { enabled: true, model: env, disabledModels, vccCli: a.vccCli };
+	if (a.enabled === false) return { enabled: false, disabledModels };
+	if (a.model?.trim()) return { enabled: true, model: a.model.trim(), disabledModels, vccCli: a.vccCli };
+	if (a.enabled === true) return { enabled: false, disabledModels, missingModel: true };
+	return { enabled: false, disabledModels };
 }
 
 /**
