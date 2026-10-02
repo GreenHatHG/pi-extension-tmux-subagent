@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Text } from "@earendil-works/pi-tui";
+import { type Component, Container, Markdown, MouseRegion, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseModelSpec } from "../core/config";
 import { runTmux } from "../core/tmux";
@@ -22,28 +22,60 @@ interface AdvisorEntryData {
 	note?: string;
 }
 
-/**
- * advisor 简报/回复的 entry 渲染器：默认折叠为一行摘要，ctrl+o（app.tools.expand）
- * 展开为完整 Markdown。数据经 pi.appendEntry 写入（不参与 LLM 上下文），
- * 会话恢复后也能重渲染。
- */
-function renderAdvisorEntry(
-	entry: { data?: unknown },
-	options: { expanded: boolean },
-	theme: Parameters<Parameters<ExtensionAPI["registerEntryRenderer"]>[1]>[2],
-) {
-	const d = (entry.data ?? {}) as Partial<AdvisorEntryData>;
+type EntryTheme = Parameters<Parameters<ExtensionAPI["registerEntryRenderer"]>[1]>[2];
+
+/** 折叠/展开两种形态的内容构建（点击与 ctrl+o 共用同一套字符串）。 */
+function buildAdvisorEntryContent(d: Partial<AdvisorEntryData>, expanded: boolean, theme: EntryTheme): Component {
 	const body = d.body ?? "";
-	const lines = body ? body.split("\n") : [];
-	if (!options.expanded) {
+	if (!expanded) {
+		const lines = body ? body.split("\n") : [];
 		const note = d.note ? ` · ${d.note}` : "";
-		return new Text(theme.fg("muted", `▸ ${d.label ?? "advisor"}（${lines.length} 行${note}，ctrl+o 展开）`), 1, 0);
+		return new Text(
+			theme.fg("muted", `▸ ${d.label ?? "advisor"}（${lines.length} 行${note}，点击或 ctrl+o 展开）`),
+			1,
+			0,
+		);
 	}
 	const c = new Container();
-	c.addChild(new Text(theme.fg("toolTitle", theme.bold(`▾ ${d.label ?? "advisor"}`)), 1, 0));
+	c.addChild(new Text(theme.fg("toolTitle", theme.bold(`▾ ${d.label ?? "advisor"}（点击收起）`)), 1, 0));
 	if (d.note) c.addChild(new Text(theme.fg("muted", d.note), 1, 0));
 	c.addChild(new Markdown(body || "（空）", 1, 0, getMarkdownTheme()));
 	return c;
+}
+
+/**
+ * advisor 简报/回复的 entry 渲染器：默认折叠为一行摘要，ctrl+o（app.tools.expand）全局
+ * 展开为完整 Markdown；fullscreen 模式下左键单击也能就地展开/收起。
+ *
+ * 点击态是 per-entry 本地状态：全局 ctrl+o 会重建 entry 组件并重置它（与 pi 原生
+ * ToolExecution / thinking block 语义一致），不是缺陷。数据经 pi.appendEntry 写入
+ * （不参与 LLM 上下文），会话恢复后也能重渲染。
+ */
+function renderAdvisorEntry(entry: { data?: unknown }, options: { expanded: boolean }, theme: EntryTheme) {
+	const d = (entry.data ?? {}) as Partial<AdvisorEntryData>;
+	let expanded = options.expanded;
+	let cache: { width: number; expanded: boolean; lines: string[] } | undefined;
+	// MouseRegion.child 只读，故用「读闭包最新 expanded」的 content 组件：点击只翻转状态 +
+	// 清缓存，下一次 render 即产出新内容（点击返回 handled 会触发重绘）。
+	const content: Component = {
+		render(width) {
+			if (!cache || cache.width !== width || cache.expanded !== expanded) {
+				cache = { width, expanded, lines: buildAdvisorEntryContent(d, expanded, theme).render(width) };
+			}
+			return cache.lines;
+		},
+		invalidate() {
+			cache = undefined;
+		},
+	};
+	return new MouseRegion(content, (event) => {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		// 同一词上的双击/三击交给 pi 的词/行选择，不切换展开态（重绘以清掉选择高亮）。
+		if (event.clickCount !== undefined && event.clickCount > 1) return { handled: true };
+		expanded = !expanded;
+		cache = undefined;
+		return { handled: true };
+	});
 }
 
 // ---------- TUI watcher：事件驱动等待 advisor 完成 ----------
