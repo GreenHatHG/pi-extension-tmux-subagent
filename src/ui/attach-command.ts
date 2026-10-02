@@ -6,17 +6,24 @@
  * 所以内层前缀生效：Ctrl-b d 只 detach 这个 attach，attach 退出后 popup 由 -E 自动关闭，
  * 回到原界面；子 agent 不受影响。
  *
- * 普通（可写）attach：滚轮 / Ctrl-b [ 可回看历史（copy-mode）。注意这也能杀会话——误按
- * Ctrl-b x / & / : 会真的杀掉子 agent，键盘输入也会打进 pane；要防误杀可改回 attach -r
+ * 普通（可写）attach：滚轮 / 前缀键 [ 可回看历史（copy-mode）。注意这也能杀会话——误按
+ * 前缀键 x / & / : 会真的杀掉子 agent，键盘输入也会打进 pane；要防误杀可改回 attach -r
  * （只读，但只读模式下 copy-mode 被禁，无法滚动）。
+ *
+ * 退出：只认前缀键 d（默认 Ctrl-b d，只 detach 浮层，子 agent 不受影响）。Ctrl-c / Esc
+ * 不关闭浮层，会被原样送进内层 pane（实测），故提示里必须写清“Ctrl-c 不是退出”。
+ *
+ * 外观：子会话在 launch 时被 styleSubagentSession 染成紫色 status 栏 + 常驻退出提示，
+ * 外层 popup 再用 -b double / -S 醒目边框，一眼区别于用户自己的 tmux。
  *
  * 机制（实测 tmux 3.6a）：从 $TMUX 解析用户 server socket，在其上
  * `display-popup -E ... "TMUX= tmux -L pi-sub attach -t <会话>"`。display-popup -E 会阻塞到
- * popup 关闭，故此命令必须 fire-and-forget（spawn + unref），不能 await。依赖 tmux ≥ 3.2。
+ * popup 关闭，故此命令必须 fire-and-forget（spawn + unref），不能 await。
+ * 依赖 tmux ≥ 3.3（-b / -S / -T 均为 3.3 起）。
  */
 import { spawn } from "node:child_process";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { captureSubagentPane, listSubagentSessions, run, SOCKET, shQuote } from "../core/tmux";
+import { captureSubagentPane, listSubagentSessions, run, SOCKET, shQuote, subagentPrefixHint } from "../core/tmux";
 
 /**
  * 解析 /attach 所在 client 的 tty：popup 是 per-client 的，多终端时必须开在正确的终端上。
@@ -55,20 +62,41 @@ async function resolveClientTty(socketPath: string): Promise<string | undefined>
 	return rows[0]?.[0];
 }
 
-/** 打开一个附着在子 agent 会话上的浮层。返回错误文案；undefined = 成功。 */
-async function openAttach(session: string): Promise<string | undefined> {
+/** 浮层打开结果：error 非空 = 失败；成功时带回前缀文案，供退出提示复用。 */
+interface AttachResult {
+	error?: string;
+	prefix?: string;
+}
+
+/** 打开一个附着在子 agent 会话上的浮层，成功时带回前缀文案。 */
+async function openAttach(session: string): Promise<AttachResult> {
 	const socketPath = process.env.TMUX?.split(",")[0];
-	if (!socketPath) return "未在 tmux 内（$TMUX 为空），无法开浮层。";
+	if (!socketPath) return { error: "未在 tmux 内（$TMUX 为空），无法开浮层。" };
 
 	const tty = await resolveClientTty(socketPath);
+	const prefix = await subagentPrefixHint();
 	// 保留 TMUX=：popup 命令由外层 server 执行，若 server 环境里带 TMUX，attach 会报嵌套告警
 	const popupCmd = `TMUX= tmux -L ${SOCKET} attach -t ${shQuote(session)}`;
 	const args = ["-S", socketPath, "display-popup"];
 	if (tty) args.push("-c", tty);
-	args.push("-E", "-w", "90%", "-h", "90%", "-T", `子 agent ${session}（围观）`, popupCmd);
+	// -b double + 粉色 -S 边框：外层浮层本身与用户 tmux 区分；标题里也带上退出提示
+	args.push(
+		"-E",
+		"-w",
+		"90%",
+		"-h",
+		"90%",
+		"-b",
+		"double",
+		"-S",
+		"fg=colour213,bg=default",
+		"-T",
+		`子 agent ${session} · ${prefix} d 退出围观`,
+		popupCmd,
+	);
 
 	// display-popup -E 会阻塞调用进程直到浮层关闭：必须 fire-and-forget，不能 await run()。
-	// 短暂等 spawn/早退：spawn 失败、或 display-popup 立即报错（如 tmux < 3.2）时给出明确错误。
+	// 短暂等 spawn/早退：spawn 失败、或 display-popup 立即报错（如 tmux < 3.3）时给出明确错误。
 	const child = spawn("tmux", args, { env: { ...process.env, TMUX: "" }, stdio: "ignore", detached: true });
 	const error = await new Promise<string | undefined>((resolve) => {
 		const timer = setTimeout(() => resolve(undefined), 700);
@@ -79,7 +107,7 @@ async function openAttach(session: string): Promise<string | undefined> {
 		child.once("exit", (code) => {
 			if (code !== 0) {
 				clearTimeout(timer);
-				resolve(`tmux display-popup 失败（exit ${code}）——需要 tmux ≥ 3.2。`);
+				resolve(`tmux display-popup 失败（exit ${code}）——需要 tmux ≥ 3.3。`);
 			}
 		});
 	});
@@ -87,11 +115,11 @@ async function openAttach(session: string): Promise<string | undefined> {
 		/* 已 spawn 后再报错（罕见）静默吞掉，别打挂 TUI */
 	});
 	child.unref();
-	return error;
+	return error ? { error } : { prefix };
 }
 
-function popupMsg(name: string): string {
-	return `已在浮层中 attach 到 ${name}（Ctrl-b d 或 Ctrl-c 退出，不影响子 agent）。滚轮 / Ctrl-b [ 可回看历史；注意这是普通 attach：Ctrl-b x / & / : 会真的杀会话，键盘也会打进 pane。`;
+function popupMsg(name: string, prefix: string): string {
+	return `已在浮层中 attach 到 ${name}。退出：${prefix} d（只 detach 浮层，子 agent 继续跑）。注意 Ctrl-c 不是退出——它会送进子 agent；滚轮 / ${prefix} [ 可回看历史（普通 attach：${prefix} x / & / : 会真的杀会话，键盘也会打进 pane）。`;
 }
 
 async function listLine(session: string): Promise<string> {
@@ -111,14 +139,14 @@ async function pickSession(ctx: ExtensionCommandContext): Promise<void> {
 	const chosen = await ctx.ui.select("运行中的子 agent（选择即围观）", items);
 	if (!chosen) return;
 	const name = chosen.split(/\s/)[0];
-	const err = await openAttach(name);
-	if (err) ctx.ui.notify(err, "error");
-	else ctx.ui.notify(popupMsg(name), "info");
+	const res = await openAttach(name);
+	if (res.error) ctx.ui.notify(res.error, "error");
+	else ctx.ui.notify(popupMsg(name, res.prefix ?? "Ctrl-b"), "info");
 }
 
 export function setupAttachCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("attach", {
-		description: "在浮层里围观某个子 agent（真实画面，Ctrl-b d / Ctrl-c 退出）；无参数弹出运行中的列表选择",
+		description: "在浮层里围观某个子 agent（真实画面，前缀键 d 退出，不影响子 agent）；无参数弹出运行中的列表选择",
 		getArgumentCompletions: async () => {
 			const sessions = await listSubagentSessions();
 			return sessions.map((value) => ({ value, label: value, description: "围观该子 agent" }));
@@ -146,12 +174,12 @@ export function setupAttachCommand(pi: ExtensionAPI): void {
 				return;
 			}
 
-			const err = await openAttach(name);
-			if (err) {
-				ctx.ui.notify(err, "error");
+			const res = await openAttach(name);
+			if (res.error) {
+				ctx.ui.notify(res.error, "error");
 				return;
 			}
-			ctx.ui.notify(popupMsg(name), "info");
+			ctx.ui.notify(popupMsg(name, res.prefix ?? "Ctrl-b"), "info");
 		},
 	});
 }
