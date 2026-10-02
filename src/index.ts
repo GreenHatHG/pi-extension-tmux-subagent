@@ -63,13 +63,14 @@ export default async function (pi: ExtensionAPI) {
 	setupAdvisorSettings(pi, advisorSession);
 	if (advisor.enabled && advisor.model) {
 		const sessionModel = advisor.model;
-		setupAdvisor(pi, sessionModel, (question, context, sessionFile) => {
+		setupAdvisor(pi, sessionModel, (question, context, sessionFile, parentSessionId) => {
 			// 模型/思考档位每次调用现读配置（/advisor 面板改了下一次调用即生效）；
 			// 读不到（被清空）则回退会话启动时的模型。sessionFile + vccCli 透传给简报取证栏目。
 			const model = resolveAdvisorModel() ?? sessionModel;
 			return launchSub(pi, question, context, advisorMode, [`--model ${shQuote(model)}`], {
 				sessionFile,
 				vccCli: advisor.vccCli,
+				parentSessionId,
 			});
 		});
 	} else if (advisor.missingModel) {
@@ -78,8 +79,12 @@ export default async function (pi: ExtensionAPI) {
 	}
 
 	// ---------- web_research（默认开启）----------
-	setupWebResearch(pi, (question, context) => launchSub(pi, question, context, webResearchMode));
+	setupWebResearch(pi, (question, context, _sessionFile, parentSessionId) =>
+		launchSub(pi, question, context, webResearchMode, [], { parentSessionId }),
+	);
 
 	// ---------- spawn_sub（任务模式，默认开启）----------
-	setupSpawnSub(pi, (question, context) => launchSub(pi, question, context, taskMode));
+	setupSpawnSub(pi, (question, context, _sessionFile, parentSessionId) =>
+		launchSub(pi, question, context, taskMode, [], { parentSessionId }),
+	);
 }
