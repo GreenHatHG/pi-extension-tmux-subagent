@@ -3,16 +3,23 @@
  * SubagentMode 描述对象。launchSub 只面向这个接口，不再按模式 if-else 散布；
  * 新增第四种模式 = 在本目录加一个实例 + 必要时补一份 brief/preset，其他文件零改动。
  *
- * 模式差异的四个维度：
+ * 模式差异的五个维度：
  * - brief：子 agent 简报模板（唯一上下文来源）→ briefs.ts
  * - presetFlags：子 agent pi 的预设 CLI flag → presets.ts
  * - extraEnvArgs：附加的 tmux -e 环境注入（如 web-research 的联网引导开关）
+ * - display：简报/回复在 TUI 里的标签（主会话纯显示 entry，见 ui/subagent-entries.ts）
  * - 附加系统提示词/工具集整形（advisor 用 CLI 预设；web-research 在子 agent 进程内
  *   完成，见 session/web-bootstrap.ts，不属于本接口）
  */
 import { ENV_SUB_WEB } from "../core/env";
 import { type BriefOpts, buildAdvisorBrief, buildTaskBrief, buildWebResearchBrief } from "./briefs";
 import { advisorPresetFlags, webResearchPresetFlags } from "./presets";
+
+/** 简报/回复条目在 TUI 里的标签（渲染器在 ui/subagent-entries.ts，三个模式共用）。 */
+export interface SubagentDisplay {
+	briefLabel: string;
+	replyLabel: string;
+}
 
 export type ModeName = "task" | "advisor" | "web-research";
 
@@ -37,6 +44,8 @@ export interface SubagentMode {
 	presetFlags(useWatchdog: boolean): string[];
 	/** 附加 tmux -e 环境注入（已成对：flag 名与值交替）。收尾协议的差异不在模式，见 completion/。 */
 	extraEnvArgs(): string[];
+	/** 简报/回复在 TUI 里的标签（三个模式共用同一渲染器，只有标签不同） */
+	display: SubagentDisplay;
 }
 
 export const taskMode: SubagentMode = {
@@ -44,6 +53,7 @@ export const taskMode: SubagentMode = {
 	brief: buildTaskBrief,
 	presetFlags: () => [],
 	extraEnvArgs: () => [],
+	display: { briefLabel: "子 agent 简报", replyLabel: "子 agent 回复" },
 };
 
 export const advisorMode: SubagentMode = {
@@ -51,6 +61,7 @@ export const advisorMode: SubagentMode = {
 	brief: buildAdvisorBrief,
 	presetFlags: advisorPresetFlags,
 	extraEnvArgs: () => [],
+	display: { briefLabel: "advisor 咨询简报", replyLabel: "advisor 回复" },
 };
 
 export const webResearchMode: SubagentMode = {
@@ -60,4 +71,5 @@ export const webResearchMode: SubagentMode = {
 	// web-research 引导：子 agent 进程的扩展 factory 检测到该变量后在 load 阶段
 	// 动态激活 pi-web-access 工具集（见 session/web-bootstrap.ts）
 	extraEnvArgs: () => ["-e", `${ENV_SUB_WEB}=1`],
+	display: { briefLabel: "联网调研简报", replyLabel: "联网调研回复" },
 };

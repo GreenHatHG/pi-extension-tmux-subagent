@@ -69,7 +69,7 @@ export interface LaunchResult {
 	text: string;
 	/** 给用户的运维速查（只在 TUI 渲染，不进 LLM 上下文） */
 	ops?: string;
-	/** 简报原文（advisor 模式下 appendEntry 打进 TUI，不进 LLM 上下文） */
+	/** 简报原文（主会话 appendEntry 打进 TUI，不进 LLM 上下文） */
 	brief?: string;
 	session?: string;
 	artifactPath?: string;
