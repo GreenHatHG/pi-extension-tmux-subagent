@@ -5,11 +5,11 @@
  * 本文件只管「主会话侧如何呈现与注册」。
  */
 import { existsSync, readFileSync } from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, Container, Markdown, MouseRegion, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { parseModelSpec } from "../core/config";
+import { isModelDisabled, parseModelSpec } from "../core/config";
 import { runTmux } from "../core/tmux";
 import { onEvent } from "../registry";
 import { type LaunchFn, renderResultWithOps, startedToolResult } from "./shared";
@@ -187,6 +187,61 @@ function advisorRegistrationMessage(advisorModel: string): string {
 }
 
 /**
+ * 按主会话当前模型收窄 advisor。session_start 处理启动/恢复，model_select 处理会话内切换；
+ * setActiveTools 会重建系统提示词，因此下一轮开始时模型看不到已禁用的工具。
+ */
+export function setupAdvisorModelGuard(
+	pi: ExtensionAPI,
+	patterns: readonly string[] | undefined,
+	session: { enabled: boolean; disabledByMainModel?: boolean },
+): void {
+	if (!patterns?.length) return;
+	let restoreWhenAllowed = false;
+
+	function apply(modelSpec: string | undefined): void {
+		const disabled = isModelDisabled(patterns, modelSpec);
+		session.disabledByMainModel = disabled;
+		const active = pi.getActiveTools();
+		if (disabled) {
+			if (active.includes("advisor")) {
+				restoreWhenAllowed = true;
+				pi.setActiveTools(active.filter((name) => name !== "advisor"));
+			}
+			return;
+		}
+		if (restoreWhenAllowed && session.enabled && !active.includes("advisor")) {
+			restoreWhenAllowed = false;
+			pi.setActiveTools([...active, "advisor"]);
+		}
+	}
+
+	onEvent(
+		pi,
+		"session_start",
+		{
+			where: "tools/advisor.ts:主模型过滤",
+			note: "启动/恢复会话时：当前主模型命中 advisor.disabledModels 则移除 advisor 工具",
+		},
+		(_event: unknown, ctx: ExtensionContext) => {
+			const model = ctx.model;
+			apply(model ? `${model.provider}/${model.id}` : undefined);
+		},
+	);
+	onEvent(
+		pi,
+		"model_select",
+		{
+			where: "tools/advisor.ts:主模型过滤",
+			note: "会话内切换主模型时：按 advisor.disabledModels 动态增删 advisor 工具",
+		},
+		(event: unknown) => {
+			const model = (event as { model?: { provider?: string; id?: string } }).model;
+			apply(model?.provider && model.id ? `${model.provider}/${model.id}` : undefined);
+		},
+	);
+}
+
+/**
  * 注册 advisor 工具。模型/thinking 由配置决定，不可通过工具参数干预：index.ts 的 launch
  * 回调在**每次调用时**现读配置补 `--model`（/advisor 面板改完下次调用即生效），这里管工具
  * 定义与 TUI 呈现。
@@ -210,7 +265,11 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			note: "advisor 已注册时：session_start 提示模型与思考档位（解析 pi --model 格式串）",
 		},
 		(_event: unknown, ctx: { ui: { notify(text: string, level: string): void } }) => {
-			ctx.ui.notify(advisorRegistrationMessage(advisorModel), "info");
+			if (pi.getActiveTools().includes("advisor")) {
+				ctx.ui.notify(advisorRegistrationMessage(advisorModel), "info");
+			} else {
+				ctx.ui.notify("advisor 已按当前主模型禁用（命中 advisor.disabledModels）", "warning");
+			}
 		},
 	);
 

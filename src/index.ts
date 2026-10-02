@@ -21,8 +21,8 @@ import { launchSub } from "./launch/launch";
 import { advisorMode, taskMode, webResearchMode } from "./modes/types";
 import { setupSelfCheck } from "./session/gate";
 import { bootstrapWebResearch } from "./session/web-bootstrap";
-import { notifyAdvisorMissingModel, setupAdvisor } from "./tools/advisor";
-import { setupAdvisorSettings } from "./tools/advisor-settings";
+import { notifyAdvisorMissingModel, setupAdvisor, setupAdvisorModelGuard } from "./tools/advisor";
+import { type SessionAdvisor, setupAdvisorSettings } from "./tools/advisor-settings";
 import { setupSpawnSub } from "./tools/spawn-sub";
 import { setupWebResearch } from "./tools/web-research";
 import { setupAttachCommand } from "./ui/attach-command";
@@ -46,8 +46,14 @@ export default async function (pi: ExtensionAPI) {
 	// ---------- advisor（可选功能，默认不注册：未配置时主模型看不到这个工具） ----------
 	// enabled 蕴含 model 非空（resolveAdvisor 保证）：沿用默认模型就没有 advisor 的意义
 	const advisor = resolveAdvisor();
+	const advisorSession: SessionAdvisor = { enabled: advisor.enabled, model: advisor.model };
+	// 过滤器必须先于页脚/启动提示注册：session_start 时先根据 ctx.model 更新状态，
+	// 再让后续 handler 展示最终状态。
+	if (advisor.enabled && advisor.model) {
+		setupAdvisorModelGuard(pi, advisor.disabledModels, advisorSession);
+	}
 	// 快捷设置命令始终注册（与 enabled 无关）：否则关掉 advisor 后就没有入口把它重新打开
-	setupAdvisorSettings(pi, { enabled: advisor.enabled, model: advisor.model });
+	setupAdvisorSettings(pi, advisorSession);
 	if (advisor.enabled && advisor.model) {
 		const sessionModel = advisor.model;
 		setupAdvisor(pi, sessionModel, (question, context, sessionFile) => {

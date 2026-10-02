@@ -38,6 +38,8 @@ import { onEvent } from "../registry";
 export interface SessionAdvisor {
 	enabled: boolean;
 	model?: string;
+	/** 当前主模型命中 advisor.disabledModels 时，工具被动态移除 */
+	disabledByMainModel?: boolean;
 }
 
 const ENABLED_ON = "开启";
@@ -80,7 +82,10 @@ function paintStatus(ctx: ExtensionContext, session: SessionAdvisor): void {
 	const envOverride = !!process.env.PI_ADVISOR_MODEL?.trim();
 	const nextModel = resolveAdvisorModel() ?? session.model;
 	const parts: string[] = [];
-	if (session.enabled) {
+	if (session.disabledByMainModel) {
+		parts.push(theme.fg("muted", "advisor:off"));
+		parts.push(theme.fg("warning", "（主模型禁用）"));
+	} else if (session.enabled) {
 		parts.push(theme.fg("accent", "advisor:on"));
 		if (nextModel) parts.push(theme.fg("muted", `· ${shortModel(nextModel)}`));
 		if (!envOverride && file.enabled === false) parts.push(theme.fg("warning", "→off(重启)"));
@@ -388,6 +393,9 @@ export function setupAdvisorSettings(pi: ExtensionAPI, session: SessionAdvisor):
 		},
 	});
 
+	const paint = (_event: unknown, ctx: ExtensionContext) => {
+		paintStatus(ctx, session);
+	};
 	onEvent(
 		pi,
 		"session_start",
@@ -395,8 +403,15 @@ export function setupAdvisorSettings(pi: ExtensionAPI, session: SessionAdvisor):
 			where: "tools/advisor-settings.ts:页脚状态",
 			note: "会话启动时在页脚常驻显示 advisor 当前生效状态（开关=本会话，模型=下次调用）",
 		},
-		(_event: unknown, ctx: ExtensionContext) => {
-			paintStatus(ctx, session);
+		paint,
+	);
+	onEvent(
+		pi,
+		"model_select",
+		{
+			where: "tools/advisor-settings.ts:页脚状态",
+			note: "切换主模型后刷新 advisor 页脚状态",
 		},
+		paint,
 	);
 }
