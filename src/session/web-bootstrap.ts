@@ -3,7 +3,7 @@
  * （主会话经 tmux -e 注入 PI_SUB_WEB=1），与主会话侧的其余接线分属两个执行
  * 上下文——session/ 目录专门表达这个边界。
  *
- * 职责：检测到 PI_SUB_WEB 即
+ * 职责：由 index 按 role.web（子 agent 经 tmux -e 注入 PI_SUB_WEB=1）门禁调用，进行
  * 1. 人格段在 before_agent_start 按结构（首段）替换，其余段落（工具列表、guidelines、
  *    docs 段、project_context、skills、cwd）保持 pi 原生，上游更新自动跟随。
  *    -p 批处理与交互式都会触发该事件。研究纪律段不在这里：它经 pi 公开 CLI 参数
@@ -23,7 +23,6 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENV_SUB_WEB } from "../core/env";
 import { onEvent } from "../registry";
 
 /** 本模块文件路径：jiti（CJS 变换）注入 __filename；纯 ESM 上下文退回 import.meta.url */
@@ -127,12 +126,10 @@ function swapPersona(base: string, hasCustomPrompt: boolean): string {
 }
 
 /**
- * web-research 子 agent 引导入口（factory 阶段执行，index.ts 在 setupSelfCheck 的
- * 子 agent 提前 return 之前调用）。
+ * web-research 子 agent 引导入口（factory 阶段执行）。由 index.ts 按 role.web 门禁调用
+ * （子 agent 经 tmux -e 注入 PI_SUB_WEB=1），内部不再读环境变量。
  */
 export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
-	if (!process.env[ENV_SUB_WEB]?.trim()) return;
-
 	// pi-web-access 动态注册的工具名名单：mod.default(pi) 经代理执行，截获其
 	// registerTool 调用（收窄时名单优先、路径兑底；不依赖 PI_SUBAGENT 门禁兜底）。
 	const webAccessToolNames = new Set<string>();
