@@ -1,16 +1,12 @@
 /**
- * advisor 快捷设置：`/advisor` 命令 + 页脚状态。
+ * Advisor quick settings: the `/advisor` command + footer status. The command is always registered
+ * (regardless of enabled), else there is no way to turn advisor back on once it is off.
  *
- * 命令**始终注册**（与 advisor 是否启用无关）——否则关掉 advisor 后就再没有入口把它打开。
- *
- * 生效时机（用户选定）：
- * - 开关：工具是否注册在扩展 load 时决定 → **下次启动 pi 生效**
- * - 模型 / 思考档位：advisor 每次调用都新起子进程、现读配置 → **下次调用 advisor 生效**
- * - 页脚状态常驻显示「本会话已生效的开关 + 下次调用将使用的模型」，有未生效的开关改动时
- *   显示 `→on(重启)` / `→off(重启)`
- *
- * 面板只改 `subagent_advisor.json`（读-改-写，保留 vccCli 与未知键）。若设了环境变量
- * `PI_ADVISOR_MODEL`，它的优先级更高，面板会明确警告。
+ * When changes apply: the on/off switch is decided at extension load (takes effect next pi start);
+ * model/thinking are read from config each call (take effect next call). The footer shows the switch
+ * in effect for this session + the model the next call will use; a switch change not yet in effect
+ * shows `→on(restart)` / `→off(restart)`. When the PI_ADVISOR_MODEL env var is set it wins, and the
+ * panel warns about it.
  */
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
@@ -34,26 +30,23 @@ import {
 } from "../core/config";
 import { onEvent } from "../registry";
 
-/** 会话启动时已生效（= 已决定工具是否注册）的 advisor 状态 */
+/** Advisor state in effect at session start (= whether the tool got registered). */
 export interface SessionAdvisor {
 	enabled: boolean;
 	model?: string;
-	/** 当前主模型命中 advisor.disabledModels 时，工具被动态移除 */
+	/** Removed dynamically when the current main model hits advisor.disabledModels. */
 	disabledByMainModel?: boolean;
 }
 
-const ENABLED_ON = "开启";
-const ENABLED_OFF = "关闭";
-const THINKING_DEFAULT = "(模型默认)";
+const ENABLED_ON = "on";
+const ENABLED_OFF = "off";
+const THINKING_DEFAULT = "(model default)";
 
 /**
- * 模型支持的思考档位——与 pi 的 `getSupportedThinkingLevels`（@earendil-works/pi-ai）同构：
- * - `reasoning` 为假 → 只支持 `off`
- * - `thinkingLevelMap[level] === null` → 显式声明不支持，剔除
- * - `xhigh` / `max` 必须显式映射为字符串才支持（未映射视为不支持）
- *
- * 该函数未从 pi-coding-agent 导出，且 pi-ai 不是本包的声明依赖（运行时不一定能解析），
- * 故按同一算法本地实现，避免多引一份依赖。
+ * Thinking levels the model supports, same as pi's getSupportedThinkingLevels: reasoning false ->
+ * off only; thinkingLevelMap[level] === null is dropped; xhigh/max must be mapped explicitly. That
+ * function is not exported from pi-coding-agent and pi-ai is not a declared dep of this package, so
+ * we implement the same algorithm locally.
  */
 function supportedThinkingLevels(model: {
 	reasoning: boolean;
@@ -68,14 +61,13 @@ function supportedThinkingLevels(model: {
 	});
 }
 
-/** 从 "provider/id:thinking" 里取 "id:thinking" 作页脚短标签 */
+/** Take "id:thinking" out of "provider/id:thinking" for the footer's short label. */
 function shortModel(spec: string): string {
 	const slash = spec.lastIndexOf("/");
 	return slash >= 0 ? spec.slice(slash + 1) : spec;
 }
 
-/** 重绘页脚状态：开关取本会话已生效值，模型取下次调用将使用的值。
- * 环境变量 PI_ADVISOR_MODEL 优先于配置文件，此时文件里的开关改动不会生效，不显示 `→…`。 */
+/** Repaint the footer status: the switch uses this session's in-effect value, the model uses the value the next call will use. */
 function paintStatus(ctx: ExtensionContext, session: SessionAdvisor): void {
 	const theme = ctx.ui.theme;
 	const file = readAdvisorFileConfig();
@@ -84,19 +76,19 @@ function paintStatus(ctx: ExtensionContext, session: SessionAdvisor): void {
 	const parts: string[] = [];
 	if (session.disabledByMainModel) {
 		parts.push(theme.fg("muted", "advisor:off"));
-		parts.push(theme.fg("warning", "（主模型禁用）"));
+		parts.push(theme.fg("warning", "(disabled by main model)"));
 	} else if (session.enabled) {
 		parts.push(theme.fg("accent", "advisor:on"));
 		if (nextModel) parts.push(theme.fg("muted", `· ${shortModel(nextModel)}`));
-		if (!envOverride && file.enabled === false) parts.push(theme.fg("warning", "→off(重启)"));
+		if (!envOverride && file.enabled === false) parts.push(theme.fg("warning", "→off(restart)"));
 	} else {
 		parts.push(theme.fg("muted", "advisor:off"));
-		if (file.enabled === true) parts.push(theme.fg("accent", "→on(重启)"));
+		if (file.enabled === true) parts.push(theme.fg("accent", "→on(restart)"));
 	}
 	try {
 		ctx.ui.setStatus("advisor", parts.join(" "));
 	} catch {
-		/* 状态栏不可用时静默（纯展示） */
+		/* stay quiet when the status bar is unavailable (display only) */
 	}
 }
 
@@ -105,11 +97,11 @@ interface ModelChoice {
 	provider: string;
 	id: string;
 	name: string;
-	/** 该模型支持的思考档位（用于过滤思考档位行） */
+	/** Thinking levels this model supports (used to filter the thinking rows). */
 	thinkingLevels: string[];
 }
 
-/** 模型候选：会话限定了模型就用限定集，否则用全部可用模型（已配 auth 的） */
+/** Model candidates: use the scoped set if the session scopes models, else all available models. */
 function collectModels(ctx: ExtensionContext): ModelChoice[] {
 	const scoped = ctx.scopedModels;
 	const list = scoped.length > 0 ? scoped.map((s) => s.model) : ctx.modelRegistry.getAvailable();
@@ -131,7 +123,7 @@ function collectModels(ctx: ExtensionContext): ModelChoice[] {
 	return out;
 }
 
-/** 思考档位行可选值：`(模型默认)` + 该模型支持的档位。模型未知（未设置 / 自定义）时列出全部档位。 */
+/** Thinking row values: `(model default)` + the levels this model supports. When the model is unknown, list all levels. */
 function thinkingValuesFor(models: ModelChoice[], modelValue: string): string[] {
 	const levels = models.find((m) => m.value === modelValue)?.thinkingLevels ?? [...THINKING_LEVELS];
 	return [THINKING_DEFAULT, ...levels];
@@ -140,9 +132,8 @@ function thinkingValuesFor(models: ModelChoice[], modelValue: string): string[] 
 type PickerRow = { kind: "model"; item: ModelChoice } | { kind: "custom"; value: string };
 
 /**
- * 模型选择子菜单：输入即模糊过滤（id/provider/name），回车确认。
- * 输入串非空且不等于任何候选时，列表顶部给一条「使用自定义」——覆盖本地 catalogue 里没有
- * 但子 agent 的 pi 能解析的模型。Esc 返回不选。
+ * Model submenu: typing filters live (id/provider/name), Enter confirms. When the typed text is
+ * non-empty and matches no candidate, a "use custom" row appears at the top. Esc returns without a pick.
  */
 function buildModelPicker(
 	models: ModelChoice[],
@@ -150,7 +141,7 @@ function buildModelPicker(
 	theme: Theme,
 	done: (value?: string) => void,
 ): Component {
-	const input = new Input({ placeholder: "输入以搜索模型…" });
+	const input = new Input({ placeholder: "Type to search models…" });
 	input.focused = true;
 	let rows: PickerRow[] = [];
 	let selected = 0;
@@ -178,14 +169,14 @@ function buildModelPicker(
 
 	return {
 		render(width: number) {
-			const lines: string[] = [theme.fg("accent", theme.bold("选择 advisor 模型"))];
+			const lines: string[] = [theme.fg("accent", theme.bold("Pick advisor model"))];
 			lines.push(...input.render(width));
 			lines.push("");
 			const maxVisible = 12;
 			const start = Math.max(0, Math.min(selected - Math.floor(maxVisible / 2), rows.length - maxVisible));
 			const end = Math.min(start + maxVisible, rows.length);
 			if (rows.length === 0) {
-				lines.push(theme.fg("muted", "  无匹配模型"));
+				lines.push(theme.fg("muted", "  no matching model"));
 			}
 			for (let i = start; i < end; i++) {
 				const row = rows[i];
@@ -193,7 +184,7 @@ function buildModelPicker(
 				const isSel = i === selected;
 				const cursor = isSel ? theme.fg("accent", "→ ") : "  ";
 				if (row.kind === "custom") {
-					lines.push(cursor + theme.fg("warning", `✎ 使用自定义：${row.value}`));
+					lines.push(cursor + theme.fg("warning", `✎ use custom: ${row.value}`));
 					continue;
 				}
 				const check = row.item.value === currentBare ? theme.fg("accent", "✓ ") : "  ";
@@ -203,7 +194,7 @@ function buildModelPicker(
 			if (start > 0 || end < rows.length) {
 				lines.push(theme.fg("muted", `  (${selected + 1}/${rows.length})`));
 			}
-			lines.push(theme.fg("dim", "↑↓ 选择 · Enter 确认 · Esc 返回 · 输入即搜索"));
+			lines.push(theme.fg("dim", "↑↓ select · Enter confirm · Esc back · typing searches"));
 			return lines;
 		},
 		invalidate() {
@@ -227,7 +218,7 @@ function buildModelPicker(
 	};
 }
 
-/** 打开交互面板：开关 / 模型 / 思考档位（vccCli 只读）。改动即时保存。 */
+/** Open the interactive panel: switch / model / thinking level (vccCli is read-only). Changes save right away. */
 async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor): Promise<void> {
 	const file = readAdvisorFileConfig();
 	const envOverride = process.env.PI_ADVISOR_MODEL?.trim();
@@ -240,13 +231,13 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 	await ctx.ui.custom<boolean>((tui, theme, _kb, done) => {
 		const container = new Container();
 		container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-		container.addChild(new Text(theme.fg("accent", theme.bold("advisor 设置")), 0, 0));
+		container.addChild(new Text(theme.fg("accent", theme.bold("advisor settings")), 0, 0));
 		if (envOverride) {
 			container.addChild(
 				new Text(
 					theme.fg(
 						"warning",
-						`环境变量 PI_ADVISOR_MODEL=${envOverride} 优先级更高，将覆盖此处的模型：下面改模型不会生效`,
+						`Env var PI_ADVISOR_MODEL=${envOverride} wins and overrides the model here: changing the model below has no effect`,
 					),
 					0,
 					0,
@@ -254,26 +245,31 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 			);
 		}
 		container.addChild(
-			new Text(theme.fg("muted", "模型 / 思考档位：下次调用 advisor 生效　·　开关：下次启动 pi 生效"), 0, 0),
+			new Text(
+				theme.fg("muted", "Model / thinking level: apply next advisor call　·　Switch: applies next pi start"),
+				0,
+				0,
+			),
 		);
 
 		let list: SettingsList;
 
-		/** 写回配置；失败（只读目录/磁盘）时提示并返回 false，由调用方回滚草稿 */
+		/** Write the config back; on failure (read-only dir/disk) notify and return false so the caller can roll back the draft. */
 		function persist(patch: { enabled?: boolean; model?: string | null }): boolean {
 			try {
 				writeAdvisorConfig(patch);
 				return true;
 			} catch (err) {
-				ctx.ui.notify(`advisor 配置写入失败：${err instanceof Error ? err.message : String(err)}`, "error");
+				ctx.ui.notify(`Failed to write advisor config: ${err instanceof Error ? err.message : String(err)}`, "error");
 				return false;
 			}
 		}
 
 		const thinkingItem: SettingItem = {
 			id: "thinking",
-			label: "思考档位",
-			description: "仅列出该模型支持的档位，追加在模型串后（下次调用 advisor 生效）",
+			label: "Thinking level",
+			description:
+				"Lists only the levels this model supports, appended to the model string (applies next advisor call)",
 			currentValue: draftThinking ?? THINKING_DEFAULT,
 			values: thinkingValuesFor(models, draftModel),
 		};
@@ -281,24 +277,24 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 		const items: SettingItem[] = [
 			{
 				id: "enabled",
-				label: "启用",
-				description: "关闭后主模型看不到 advisor 工具（下次启动 pi 生效）",
+				label: "Enabled",
+				description: "When off, the main model can't see the advisor tool (applies next pi start)",
 				currentValue: draftEnabled ? ENABLED_ON : ENABLED_OFF,
 				values: [ENABLED_ON, ENABLED_OFF],
 			},
 			{
 				id: "model",
-				label: "模型",
-				description: "advisor 子 agent 使用的模型（下次调用 advisor 生效）",
-				currentValue: draftModel || "(未设置)",
+				label: "Model",
+				description: "Model the advisor sub-agent uses (applies next advisor call)",
+				currentValue: draftModel || "(not set)",
 				submenu: (_current, subDone) => buildModelPicker(models, draftModel, theme, (value) => subDone(value)),
 			},
 			thinkingItem,
 			{
 				id: "vccCli",
 				label: "vccCli",
-				description: "原始会话取证 CLI（只读，请直接编辑 subagent_advisor.json）",
-				currentValue: file.vccCli || "(未配置)",
+				description: "Raw session forensics CLI (read-only; edit subagent_advisor.json directly)",
+				currentValue: file.vccCli || "(not configured)",
 			},
 		];
 
@@ -306,7 +302,7 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 			if (id === "enabled") {
 				const want = newValue === ENABLED_ON;
 				if (want && !draftModel) {
-					ctx.ui.notify("请先选择模型，再开启 advisor", "warning");
+					ctx.ui.notify("Pick a model first, then turn advisor on", "warning");
 					list.updateValue("enabled", ENABLED_OFF);
 					return;
 				}
@@ -315,16 +311,16 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 					return;
 				}
 				draftEnabled = want;
-				ctx.ui.notify(`advisor 已${want ? "开启" : "关闭"}：下次启动 pi 生效`, "info");
+				ctx.ui.notify(`advisor ${want ? "on" : "off"}: applies next pi start`, "info");
 			} else if (id === "model") {
 				const allowed = thinkingValuesFor(models, newValue);
 				thinkingItem.values = allowed;
-				// 新模型不支持当前思考档位时重置为模型默认，避免存下无效后缀
+				// When the new model does not support the current thinking level, reset to the model default so we don't save a bad suffix
 				const nextThinking =
 					draftThinking !== undefined && !allowed.includes(draftThinking) ? undefined : draftThinking;
 				const spec = formatModelSpec(newValue, nextThinking);
 				if (!persist({ model: spec })) {
-					list.updateValue("model", draftModel || "(未设置)");
+					list.updateValue("model", draftModel || "(not set)");
 					thinkingItem.values = thinkingValuesFor(models, draftModel);
 					return;
 				}
@@ -334,11 +330,13 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 					draftThinking = nextThinking;
 					list.updateValue("thinking", THINKING_DEFAULT);
 				}
-				const resetNote = wasReset ? "（新模型不支持原思考档位，已重置为模型默认）" : "";
-				ctx.ui.notify(`advisor 模型已保存：下次调用使用 ${spec}${resetNote}`, "info");
+				const resetNote = wasReset
+					? " (new model does not support the old thinking level, reset to model default)"
+					: "";
+				ctx.ui.notify(`advisor model saved: next call uses ${spec}${resetNote}`, "info");
 			} else if (id === "thinking") {
 				if (!draftModel) {
-					ctx.ui.notify("请先选择模型，再设置思考档位", "warning");
+					ctx.ui.notify("Pick a model first, then set the thinking level", "warning");
 					list.updateValue("thinking", draftThinking ?? THINKING_DEFAULT);
 					return;
 				}
@@ -349,7 +347,7 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 					return;
 				}
 				draftThinking = nextThinking;
-				ctx.ui.notify(`advisor 思考档位已保存：下次调用使用 ${spec}`, "info");
+				ctx.ui.notify(`advisor thinking level saved: next call uses ${spec}`, "info");
 			}
 			paintStatus(ctx, session);
 		}
@@ -357,7 +355,7 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 		list = new SettingsList(items, items.length, getSettingsListTheme(), applyChange, () => done(true));
 		container.addChild(list);
 		container.addChild(
-			new Text(theme.fg("dim", "↑↓ 选择 · Enter/Space 切换或进入 · Esc 关闭（改动已即时保存）"), 0, 0),
+			new Text(theme.fg("dim", "↑↓ select · Enter/Space toggle or open · Esc close (changes save right away)"), 0, 0),
 		);
 		container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
 
@@ -377,16 +375,18 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 }
 
 /**
- * 注册 `/advisor` 命令与页脚状态。始终调用（enabled 与否无关）。
+ * Register the `/advisor` command and the footer status.
  *
- * @param session 扩展 load 时解析出的 advisor 状态（决定工具是否注册、页脚显示的本会话开关）
+ * @param session advisor state resolved at extension load (decides whether the tool is registered,
+ *                and the switch the footer shows for this session)
  */
 export function setupAdvisorSettings(pi: ExtensionAPI, session: SessionAdvisor): void {
 	pi.registerCommand("advisor", {
-		description: "配置 advisor：开关 / 模型 / 思考档位（模型与思考下次调用生效，开关下次启动 pi 生效）",
+		description:
+			"Configure advisor: switch / model / thinking level (model and thinking apply next call, switch applies next pi start)",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
-				ctx.ui.notify("/advisor 需要 TUI 模式", "error");
+				ctx.ui.notify("/advisor needs TUI mode", "error");
 				return;
 			}
 			await openAdvisorPanel(ctx, session);
@@ -400,8 +400,8 @@ export function setupAdvisorSettings(pi: ExtensionAPI, session: SessionAdvisor):
 		pi,
 		"session_start",
 		{
-			where: "tools/advisor-settings.ts:页脚状态",
-			note: "会话启动时在页脚常驻显示 advisor 当前生效状态（开关=本会话，模型=下次调用）",
+			where: "tools/advisor-settings.ts:footer status",
+			note: "Show advisor's current in-effect state in the footer at session start (switch = this session, model = next call)",
 		},
 		paint,
 	);
@@ -409,8 +409,8 @@ export function setupAdvisorSettings(pi: ExtensionAPI, session: SessionAdvisor):
 		pi,
 		"model_select",
 		{
-			where: "tools/advisor-settings.ts:页脚状态",
-			note: "切换主模型后刷新 advisor 页脚状态",
+			where: "tools/advisor-settings.ts:footer status",
+			note: "Refresh the advisor footer after a main-model switch",
 		},
 		paint,
 	);

@@ -1,12 +1,11 @@
 /**
- * 子 agent 简报/回复的 TUI 纯显示层（主会话）：三个工具（spawn_sub / advisor /
- * web_research）共用。简报在工具启动成功后立刻 appendEntry；回复由事件驱动的
- * watcher 等子 agent 完成后 appendEntry。两者都只进 TUI，不进 LLM 上下文，
- * 不改变主会话模型「wait-for + read result.md」的等待/读取协议。
+ * TUI-only display layer for sub-agent briefs/replies (main session), shared by all three tools.
+ * The brief is appendEntry'd right after launch succeeds; the reply is appendEntry'd by a watcher
+ * after the sub-agent finishes. Both go to the TUI only, not into the LLM context, and don't change
+ * the main session model's "wait-for + read result.md" protocol.
  *
- * 依赖方向：ui → core（tmux 原语），另只从 modes/types 取类型（SubagentDisplay）。
- * 不 import launch/ 或 tools/，运行结果的字段用本地结构最小集描述（与 tools/shared.ts
- * 同样的做法）。
+ * Dependency direction: ui -> core; it imports neither launch/ nor tools/, so run-result fields are
+ * described by a local minimal shape.
  */
 import { existsSync, readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -15,20 +14,20 @@ import { type Component, Container, Markdown, MouseRegion, Text } from "@earendi
 import { runTmux } from "../core/tmux";
 import type { SubagentDisplay } from "../modes/types";
 
-/** 新写入的 entry 类型名（三个模式共用，语义与 advisor 无关）。 */
+/** New entry type names (shared by the three modes). */
 export const SUBAGENT_BRIEF_ENTRY = "pi-subagent-brief";
 export const SUBAGENT_REPLY_ENTRY = "pi-subagent-reply";
 
 /**
- * 旧类型名：advisor-only 时期写入的历史 jsonl 用的是这两个。只注册渲染器让旧会话
- * 恢复后仍能显示，不再写入新数据（新数据一律用上面的通用名）。
- * 未注册的 customType 在 pi 里渲染为空——不保留这些别名旧 entry 会彻底隐形。
+ * Old type names: used by history jsonl written during the advisor-only era. We only register the
+ * renderers so old sessions still display; an unregistered customType renders as empty in pi, so
+ * keeping the old entry names would make them invisible.
  */
 const LEGACY_ENTRY_TYPES = ["pi-advisor-brief", "pi-advisor-reply"];
 
-/** LaunchResult 的显示相关字段（结构最小集，避免 ui → launch 的反向依赖）。 */
+/** Display-related fields of LaunchResult (minimal shape). */
 export interface SubagentLaunchInfo {
-	/** 子 agent 简报原文（appendEntry 纯显示用） */
+	/** Brief text (main-session appendEntry, display only). */
 	brief?: string;
 	session?: string;
 	artifactPath?: string;
@@ -45,7 +44,7 @@ interface SubagentEntryData {
 
 type EntryTheme = Parameters<Parameters<ExtensionAPI["registerEntryRenderer"]>[1]>[2];
 
-/** 折叠/展开两种形态的内容构建（点击与 ctrl+o 共用同一套字符串）。 */
+/** Build content for the collapsed and expanded forms. */
 function buildSubagentEntryContent(
 	d: Partial<SubagentEntryData>,
 	fallback: string,
@@ -57,25 +56,25 @@ function buildSubagentEntryContent(
 		const lines = body ? body.split("\n") : [];
 		const note = d.note ? ` · ${d.note}` : "";
 		return new Text(
-			theme.fg("muted", `▸ ${d.label ?? fallback}（${lines.length} 行${note}，点击或 ctrl+o 展开）`),
+			theme.fg("muted", `▸ ${d.label ?? fallback} (${lines.length} lines${note}, click or ctrl+o to expand)`),
 			1,
 			0,
 		);
 	}
 	const c = new Container();
-	c.addChild(new Text(theme.fg("toolTitle", theme.bold(`▾ ${d.label ?? fallback}（点击收起）`)), 1, 0));
+	c.addChild(new Text(theme.fg("toolTitle", theme.bold(`▾ ${d.label ?? fallback} (click to collapse)`)), 1, 0));
 	if (d.note) c.addChild(new Text(theme.fg("muted", d.note), 1, 0));
-	c.addChild(new Markdown(body || "（空）", 1, 0, getMarkdownTheme()));
+	c.addChild(new Markdown(body || "(empty)", 1, 0, getMarkdownTheme()));
 	return c;
 }
 
 /**
- * 简报/回复的 entry 渲染器：默认折叠为一行摘要，ctrl+o（app.tools.expand）全局
- * 展开为完整 Markdown；fullscreen 模式下左键单击也能就地展开/收起。
+ * Entry renderer for briefs/replies: collapsed to a one-line summary by default, ctrl+o expands it
+ * globally to full Markdown; in fullscreen mode a left click expands/collapses in place.
  *
- * 点击态是 per-entry 本地状态：全局 ctrl+o 会重建 entry 组件并重置它（与 pi 原生
- * ToolExecution / thinking block 语义一致），不是缺陷。数据经 pi.appendEntry 写入
- * （不参与 LLM 上下文），会话恢复后也能重渲染。
+ * The click state is local per entry: the global ctrl+o rebuilds the entry component and resets it
+ * (same as pi's native ToolExecution / thinking block). Data is written via pi.appendEntry, so it
+ * can re-render after a session restore.
  */
 function renderSubagentEntry(
 	entry: { data?: unknown; customType?: string },
@@ -83,12 +82,12 @@ function renderSubagentEntry(
 	theme: EntryTheme,
 ) {
 	const d = (entry.data ?? {}) as Partial<SubagentEntryData>;
-	// 旧 advisor entry 的 fallback 文案保持 "advisor"（仅 label 缺失的吐形 entry 可见）
+	// keep the old advisor entry fallback text as "advisor" (only visible on entries with a missing label)
 	const fallback = entry.customType && LEGACY_ENTRY_TYPES.includes(entry.customType) ? "advisor" : "subagent";
 	let expanded = options.expanded;
 	let cache: { width: number; expanded: boolean; lines: string[] } | undefined;
-	// MouseRegion.child 只读，故用「读闭包最新 expanded」的 content 组件：点击只翻转状态 +
-	// 清缓存，下一次 render 即产出新内容（点击返回 handled 会触发重绘）。
+	// MouseRegion.child is read-only, so use a content component that reads the latest expanded from
+	// the closure: a click only flips the state and clears the cache, and the next render makes the new content.
 	const content: Component = {
 		render(width) {
 			if (!cache || cache.width !== width || cache.expanded !== expanded) {
@@ -102,7 +101,7 @@ function renderSubagentEntry(
 	};
 	return new MouseRegion(content, (event) => {
 		if (event.type !== "click" || event.button !== "left") return undefined;
-		// 同一词上的双击/三击交给 pi 的词/行选择，不切换展开态（重绘以清掉选择高亮）。
+		// Double/triple click on the same word goes to pi's word/line selection, so don't toggle expand
 		if (event.clickCount !== undefined && event.clickCount > 1) return { handled: true };
 		expanded = !expanded;
 		cache = undefined;
@@ -111,8 +110,7 @@ function renderSubagentEntry(
 }
 
 /**
- * 注册简报/回复的 entry 渲染器。与工具注册无耦合，在主会话分支调一次即可
- * （子 agent pane 不注册：那里永远不会 appendEntry）。
+ * Register the brief/reply entry renderers. Call once in the main-session branch.
  */
 export function registerSubagentEntryRenderers(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer(SUBAGENT_BRIEF_ENTRY, renderSubagentEntry);
@@ -120,12 +118,12 @@ export function registerSubagentEntryRenderers(pi: ExtensionAPI): void {
 	for (const legacy of LEGACY_ENTRY_TYPES) pi.registerEntryRenderer(legacy, renderSubagentEntry);
 }
 
-/** 简报打进 TUI（appendEntry，不进 LLM 上下文）。启动失败/回退路径无 brief 时跳过。 */
+/** Push the brief into the TUI (not the LLM context); skip when there is no brief. */
 export function showSubagentBrief(pi: ExtensionAPI, r: SubagentLaunchInfo, display: SubagentDisplay): void {
 	if (r.brief) pi.appendEntry(SUBAGENT_BRIEF_ENTRY, { label: display.briefLabel, body: r.brief });
 }
 
-/** 启动 TUI watcher 等子 agent 完成并打进回复。字段不全（如 hook 注册失败的回退结果）时跳过。 */
+/** Start a TUI watcher that waits for the sub-agent and pushes the reply; skip when fields are missing. */
 export function watchSubagentReply(pi: ExtensionAPI, r: SubagentLaunchInfo, display: SubagentDisplay): void {
 	if (r.session && r.artifactPath && r.exitFile && r.done) {
 		void watchSubagentResult(pi, {
@@ -135,34 +133,34 @@ export function watchSubagentReply(pi: ExtensionAPI, r: SubagentLaunchInfo, disp
 			done: r.done,
 			logPath: r.logPath ?? "",
 			label: display.replyLabel,
-		}).catch(() => {}); // readFileSync TOCTOU 等异常：watcher 是纯显示增强，静默失败
+		}).catch(() => {}); // readFileSync TOCTOU and similar: the watcher is a display-only bonus, so fail quietly
 	}
 }
 
-/** 失败时把 stderr log 尾部暴露给用户（空回复 entry 不能再是空：根因就在这里）。
- * watchdog 路径 pi 的 stderr 重定向到 log（见 completion/profile.ts）；批处理路径
- * log 是 stdout+stderr。读不到（旧格式/未生成）给明确提示。 */
+/**
+ * On failure, show the tail of the stderr log to the user. The watchdog path's log is pi's stderr
+ * only; the batch path's log is stdout+stderr. Give a clear message when it can't be read.
+ */
 function failureLog(logPath: string): string {
-	if (!logPath || !existsSync(logPath)) return "（无 stderr log——旧版本 pane 命令未重定向 stderr）";
+	if (!logPath || !existsSync(logPath)) return "(no stderr log — old pane commands did not redirect stderr)";
 	const lines = readFileSync(logPath, "utf8").split("\n");
-	return ["## 子 agent stderr（末 30 行）", "```", ...lines.slice(-30), "```"].join("\n");
+	return ["## sub-agent stderr (last 30 lines)", "```", ...lines.slice(-30), "```"].join("\n");
 }
 
 /**
- * 事件驱动等待子 agent 完成，把 result.md 内容以纯显示 entry 打进 TUI。
- * 协议与主 agent 拿结论的说明（mainAgentNote）同构：exit 文件已存在 → 直接判读；
- * 否则阻塞 wait-for（零 token），与每轮 600s 兜底 race——超时后 kill 掉挂着的
- * tmux client，再 has-session 判读：会话还在 = 没跑完，继续下一轮 wait-for；
- * 会话已消失 = 已结束但信号被错过（如 pane-died hook 注册失败时的崩溃），读
- * exit 判读。总量上限 6h，防止 hook 全部失效时无限等。不改变等待/读取协议：
- * 主会话模型仍按 mainAgentNote 自行 wait-for + read；这里只是让用户在 TUI
- * 里直接看到子 agent 的回复。
+ * Wait for the sub-agent to finish, event-driven, then push result.md content into the TUI as a
+ * display-only entry. The protocol mirrors the main agent's mainAgentNote: if the exit file already
+ * exists -> read it now; else block on wait-for (zero tokens), raced against a 600s fallback per
+ * round — after a timeout, kill the hanging tmux client, then has-session to decide: session still
+ * there = not done, go another round; session gone = finished but the signal was missed, read exit.
+ * Total cap 6h, so we don't wait forever if every hook fails.
  *
- * 已知边界（均为可接受的最坏情况）：
- * - 信号在「循环头检查 exit」与「wait-for 建立等待」之间的空窗被错过（信号对
- *   后来者不重放）：该轮睡满 600s 后由 has-session 分支判读，报告最多迟到一轮；
- * - 用户退出会话：本 watcher 的 JS 逻辑随之静默终止（不阻塞进程退出），tmux
- *   client 进程成为孤儿，正常完成时被信号唤醒自行退出。
+ * Known edge cases:
+ * - a signal missed in the gap between the loop-head exit check and the wait-for setup (signals are
+ *   not replayed for late waiters): that round sleeps the full 600s, then the has-session branch
+ *   decides, so the report is at most one round late;
+ * - the user quits the session: the watcher's JS logic stops with it (does not block process exit),
+ *   and the tmux client process becomes an orphan, waking on the signal and exiting on normal finish.
  */
 const WATCH_ROUND_TIMEOUT = 600_000;
 const WATCH_TOTAL_LIMIT = 6 * 3600_000;
@@ -174,7 +172,7 @@ async function watchSubagentResult(
 		exitFile: string;
 		done: string;
 		logPath: string;
-		/** 回复 entry 的 label（data.label，渲染时显示） */
+		/** Reply entry label (data.label, shown when rendered). */
 		label: string;
 	},
 ): Promise<void> {
@@ -182,17 +180,15 @@ async function watchSubagentResult(
 	const started = Date.now();
 	while (Date.now() - started < WATCH_TOTAL_LIMIT) {
 		if (existsSync(exitFile)) break;
-		// wait-for 阻塞等待。wait-for 的信号会唤醒同一频道上所有等待者，
-		// 与主 agent 的 bash wait-for 互不干扰。
+		// a wait-for signal wakes every waiter on the same channel and does not interfere with the main agent's bash wait-for
 		let waiter: import("node:child_process").ChildProcess | undefined;
 		const signal = runTmux(["wait-for", done], (proc) => {
 			waiter = proc;
-			// 全部句柄 unref：proc.unref 压不住 stdio 管道句柄（它们是独立的
-			// ref'd handle），必须逐个 unref，否则用户退出会话时主进程会被
-			// 挂着的 wait-for 管道拖住。代价：会话退出后该 tmux client 会成为
-			// 孤儿进程（挂到信号或 server 死亡才退出，正常完成路径会被唤醒收掉）。
+			// proc.unref can't suppress the stdio pipe handles, so unref each one; otherwise when the
+			// user quits the session the main process is held by the hanging wait-for pipe. The cost is
+			// the tmux client becomes an orphan (it exits only on a signal or when the server dies).
 			proc.unref?.();
-			// stdio 为 pipe 时 stdout/stderr 实际是 net.Socket，有 unref
+			// with stdio as a pipe, stdout/stderr are really net.Socket, which have unref
 			(proc.stdout as import("node:net").Socket | null)?.unref?.();
 			(proc.stderr as import("node:net").Socket | null)?.unref?.();
 		});
@@ -204,38 +200,38 @@ async function watchSubagentResult(
 			}, WATCH_ROUND_TIMEOUT);
 			t.unref?.();
 		});
-		// 注意：tmux server 死掉时 wait-for 会以 code 0 静默醒来（像收到信号一样），
-		// 随后 exit 文件仍缺失、下一轮 wait-for 立刻报错——code≠0 也导向判读分支，
-		// 否则会空转死循环到 6h 上限。
+		// when the tmux server dies, wait-for wakes silently with code 0 (as if it got the signal),
+		// then the exit file is still missing and the next wait-for errors at once — code != 0 also
+		// leads to the decide branch, otherwise we spin to the 6h cap.
 		const r = await Promise.race([signal, timeout]);
-		if (!fired && r && r.code === 0) continue; // 信号先到：回循环头读 exit 判读
-		waiter?.kill(); // 超时或 wait-for 异常退出：收掉挂着的 client
+		if (!fired && r && r.code === 0) continue; // signal came first: loop back to read exit and decide
+		waiter?.kill(); // timeout or wait-for exited with an error: kill the hanging client
 		const has = await runTmux(["has-session", "-t", session]);
-		if (has.code === 0) continue; // 会话还在 = 没跑完，再等一轮
-		// 会话已消失 = 已结束但信号被错过：exit 缺失视为异常终止
+		if (has.code === 0) continue; // session still there = not done, go another round
+		// session gone = finished but the signal was missed: a missing exit means abnormal exit
 		if (!existsSync(exitFile)) {
 			pi.appendEntry(SUBAGENT_REPLY_ENTRY, {
 				label,
 				body: existsSync(artifactPath) ? readFileSync(artifactPath, "utf8") : failureLog(logPath),
-				note: `会话已结束但 exit 缺失（异常终止/被强杀，或 tmux server 不可用），回复可能不完整 · ${artifactPath}`,
+				note: `Session ended but exit is missing (abnormal exit / killed, or tmux server unavailable); the reply may be incomplete · ${artifactPath}`,
 			});
 			return;
 		}
 	}
-	// 跳出循环 = exit 文件已出现（正常路径），或总量超限（hook 全部失效的挂死场景）
+	// loop exit = the exit file appeared (normal path) or the total cap was hit (all hooks failed)
 	if (existsSync(exitFile)) {
 		const code = readFileSync(exitFile, "utf8").trim();
 		const ok = code === "0";
 		pi.appendEntry(SUBAGENT_REPLY_ENTRY, {
 			label,
 			body: existsSync(artifactPath) && ok ? readFileSync(artifactPath, "utf8") : failureLog(logPath),
-			note: ok ? `exit 0 · ${artifactPath}` : `exit ${code || "缺失"}（异常终止）· ${artifactPath}`,
+			note: ok ? `exit 0 · ${artifactPath}` : `exit ${code || "missing"} (abnormal exit) · ${artifactPath}`,
 		});
 		return;
 	}
 	pi.appendEntry(SUBAGENT_REPLY_ENTRY, {
 		label,
 		body: "",
-		note: `等待超时（6 小时未结束），未产出回复。交付物路径：${artifactPath}`,
+		note: `Wait timed out (not done after 6 hours), no reply produced. Deliverable path: ${artifactPath}`,
 	});
 }

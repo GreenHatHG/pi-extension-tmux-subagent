@@ -1,9 +1,10 @@
 /**
- * 子 agent 的会话命名与 /tmp 运行目录布局。core/ 最底层，无项目内依赖。
+ * Names and run-dir layout for sub-agents (under /tmp). Lowest layer in core/, no project deps.
  */
 import { randomInt } from "node:crypto";
 import { join } from "node:path";
 
+/** Task name -> session name: keep only lowercase letters, digits and dashes, max 40 chars. */
 export function kebab(s: string): string {
 	return (
 		s
@@ -16,16 +17,16 @@ export function kebab(s: string): string {
 
 const ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
-/** 4 位 base36 随机后缀（约 168 万组合）：保证并发任务不撞会话/频道/目录名 */
+/** 4 random chars so parallel tasks never share a session/channel/dir name. */
 export function shortId(): string {
 	return Array.from({ length: 4 }, () => ID_ALPHABET[randomInt(ID_ALPHABET.length)]).join("");
 }
 
-/** 子 agent 的会话名与运行时文件布局：/tmp/pi-sub-<session>/ 下 brief、交付物、exit、log */
+/** Session name and runtime file layout for one sub-agent. */
 export interface SubagentPaths {
-	/** tmux 会话名（kebab 化任务名 + 随机后缀），也是 done 频道与运行目录的前缀 */
+	/** tmux session name (kebab task name + random suffix). */
 	session: string;
-	/** wait-for 完成信号频道名 */
+	/** wait-for channel for the done signal. */
 	done: string;
 	dir: string;
 	briefPath: string;

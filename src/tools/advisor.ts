@@ -1,7 +1,6 @@
 /**
- * advisor 工具（主会话，可选功能：resolveAdvisor().enabled 时由 index.ts 注册）。
- * 职责：工具定义与配置提示。配置解析在 core/config.ts，简报模板与预设 flag 在
- * modes/，简报/回复的 TUI 呈现（三个工具共用）在 ui/subagent-entries.ts。
+ * advisor tool (main session, optional: registered by index.ts when resolveAdvisor().enabled).
+ * Tool definition and config notices. Brief template and preset flags live in modes/.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -11,19 +10,18 @@ import { onEvent } from "../registry";
 import { showSubagentBrief, watchSubagentReply } from "../ui/subagent-entries";
 import { type LaunchFn, renderResultWithOps, startedToolResult } from "./shared";
 
-// ---------- 工具注册 ----------
-
-/** 把 pi 的 provider/model:thinking 配置转换为稳定的注册提示。 */
+/** Turn a pi --model string into a registration notice (split model and thinking). */
 function advisorRegistrationMessage(advisorModel: string): string {
 	const { model, thinking } = parseModelSpec(advisorModel);
-	if (!model) return `advisor 已注册（模型：${advisorModel}）`;
-	const thinkingNote = thinking ? `，思考档位：${thinking}` : "";
-	return `advisor 已注册（模型：${model}${thinkingNote}）`;
+	if (!model) return `advisor registered (model: ${advisorModel})`;
+	const thinkingNote = thinking ? `, thinking: ${thinking}` : "";
+	return `advisor registered (model: ${model}${thinkingNote})`;
 }
 
 /**
- * 按主会话当前模型收窄 advisor。session_start 处理启动/恢复，model_select 处理会话内切换；
- * setActiveTools 会重建系统提示词，因此下一轮开始时模型看不到已禁用的工具。
+ * Narrow advisor by the main session's current model. session_start handles start/resume,
+ * model_select handles in-session switches; setActiveTools rebuilds the system prompt, so from the
+ * next turn the model no longer sees the disabled tool.
  */
 export function setupAdvisorModelGuard(
 	pi: ExtensionAPI,
@@ -54,8 +52,8 @@ export function setupAdvisorModelGuard(
 		pi,
 		"session_start",
 		{
-			where: "tools/advisor.ts:主模型过滤",
-			note: "启动/恢复会话时：当前主模型命中 advisor.disabledModels 则移除 advisor 工具",
+			where: "tools/advisor.ts:main-model filter",
+			note: "On session start/resume: remove the advisor tool when the current main model hits advisor.disabledModels",
 		},
 		(_event: unknown, ctx: ExtensionContext) => {
 			const model = ctx.model;
@@ -66,8 +64,8 @@ export function setupAdvisorModelGuard(
 		pi,
 		"model_select",
 		{
-			where: "tools/advisor.ts:主模型过滤",
-			note: "会话内切换主模型时：按 advisor.disabledModels 动态增删 advisor 工具",
+			where: "tools/advisor.ts:main-model filter",
+			note: "On in-session main-model switch: add/remove the advisor tool by advisor.disabledModels",
 		},
 		(event: unknown) => {
 			const model = (event as { model?: { provider?: string; id?: string } }).model;
@@ -77,37 +75,35 @@ export function setupAdvisorModelGuard(
 }
 
 /**
- * 注册 advisor 工具。模型/thinking 由配置决定，不可通过工具参数干预：index.ts 的 launch
- * 回调在**每次调用时**现读配置补 `--model`（/advisor 面板改完下次调用即生效），这里管工具
- * 定义与注册提示。
+ * Register the advisor tool. Model/thinking come from config and can't be changed through tool
+ * args: index.ts's launch callback reads config on each call to add --model; this function handles
+ * the tool definition and the registration notice.
  *
- * @param advisorModel 会话启动时解析出的 pi --model 串（"provider/id:thinking"）：用于 session_start
- *                     提示，并作为调用时读不到配置的兜底
- * @param launch       index.ts 注入的启动回调（包一层 launchSub，mode = advisorMode）
+ * @param advisorModel the pi --model string resolved at session start: used for the session_start
+ *                     notice and as the fallback when config can't be read at call time
+ * @param launch       the launch callback injected by index.ts (wraps launchSub with mode = advisorMode)
  */
 export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: LaunchFn): void {
-	// 显式提示：开启时让用户在会话里能直接看到 advisor 已注册及其模型/思考档位，
-	// 不用靠问模型或触发调用来确认。模型串格式为 pi --model 的 "provider/id:thinking"，
-	// ":" 后是思考档位（如 max/high），没有 ":" 就只展示模型。
+	// Explicitly tell the user advisor is registered and its model/thinking, so they don't have to trigger a call to find out
 	onEvent(
 		pi,
 		"session_start",
 		{
-			where: "tools/advisor.ts:开启提示",
-			note: "advisor 已注册时：session_start 提示模型与思考档位（解析 pi --model 格式串）",
+			where: "tools/advisor.ts:enabled notice",
+			note: "When advisor is registered: session_start shows the model and thinking level (parsed from the pi --model string)",
 		},
 		(_event: unknown, ctx: { ui: { notify(text: string, level: string): void } }) => {
 			if (pi.getActiveTools().includes("advisor")) {
 				ctx.ui.notify(advisorRegistrationMessage(advisorModel), "info");
 			} else {
-				ctx.ui.notify("advisor 已按当前主模型禁用（命中 advisor.disabledModels）", "warning");
+				ctx.ui.notify("advisor is disabled for the current main model (hits advisor.disabledModels)", "warning");
 			}
 		},
 	);
 
 	pi.registerTool({
 		name: "advisor",
-		label: "咨询 advisor",
+		label: "Consult advisor",
 		description: [
 			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor is isolated:",
 			"it sees `question` and `context` (your claims, not established facts) and, when advisor.vccCli is configured, a read-only",
@@ -117,7 +113,7 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 		].join(" "),
 		promptSnippet:
 			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
-		// 取材 rpiv-advisor 的规则，按本项目「context 需自包含」的调用方式改写。
+		// Rules borrowed from rpiv-advisor, rewritten for this project's "context must be self-contained" style.
 		promptGuidelines: [
 			"advisor: call BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption; orientation (finding files, fetching a source, seeing what's there) is not substantive work.",
 			"advisor: also call when stuck (errors recurring, approach not converging, results that don't fit) or when considering a change of approach.",
@@ -145,39 +141,37 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			// advisor 也走完整的 spawn 流程（watchdog、pane-died 钩子、exit 文件、
-			// wait-for 协议），只是换了 brief 模板和子 agent 的工具/提示词。
-			// 主会话 jsonl 路径只能在 execute 的 ctx 拿到（ExtensionAPI 无 sessionManager），
-			// 传给 launch 写进简报的取证栏目（recall CLI 以路径为参数，无需环境变量注入）；
-			// 首条消息落盘前可能为 undefined，简报会声明取证不可用。
+			// advisor runs the full spawn flow (watchdog, pane-died, exit, wait-for); only the brief and
+			// the sub-agent's tools/prompt differ. The main session jsonl path is only available in
+			// execute's ctx, so pass it to launch for the brief's forensics section; it may be undefined
+			// before the first message lands on disk, and the brief then says forensics is unavailable.
 			const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
 			const r = await launch(params.question, params.context, sessionFile, ctx.sessionManager.getSessionId());
 			if (r.ok) {
-				// 简报 + 完成后回复都只进 TUI（appendEntry，不进 LLM 上下文），
-				// 等待/读取协议不受影响（见 ui/subagent-entries.ts）。
+				// Brief/reply go through appendEntry to the TUI only, not into the LLM context
 				showSubagentBrief(pi, r, advisorMode.display);
 				watchSubagentReply(pi, r, advisorMode.display);
 			}
 			return startedToolResult(r.text, r.ops);
 		},
 		renderResult(result, _options, theme, _context) {
-			return renderResultWithOps(result, "已启动 advisor（复制到任意终端围观）：", theme);
+			return renderResultWithOps(result, "Advisor started (copy into any terminal to watch):", theme);
 		},
 	});
 }
 
-/** enabled: true 而没配 model 时，在会话里提示用户补配置 */
+/** When enabled: true but no model, tell the user in the session to add config. */
 export function notifyAdvisorMissingModel(pi: ExtensionAPI): void {
 	onEvent(
 		pi,
 		"session_start",
 		{
-			where: "tools/advisor.ts:缺模型提示",
-			note: "advisor.enabled: true 但没配 advisor.model 时：提示用户补配置（此时 advisor 未注册）",
+			where: "tools/advisor.ts:missing model notice",
+			note: "advisor.enabled: true but no advisor.model: tell the user to add config (advisor is not registered)",
 		},
 		(_event: unknown, ctx: { ui: { notify(text: string, level: string): void } }) => {
 			ctx.ui.notify(
-				"advisor 未开启：subagent_advisor.json 配了 advisor.enabled: true 但没有 advisor.model。请在 subagent_advisor.json 配置 advisor.model 或设置环境变量 PI_ADVISOR_MODEL",
+				"advisor is not on: subagent_advisor.json has advisor.enabled: true but no advisor.model. Set advisor.model in subagent_advisor.json or set the PI_ADVISOR_MODEL env var",
 				"warning",
 			);
 		},

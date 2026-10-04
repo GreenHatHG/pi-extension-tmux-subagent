@@ -1,18 +1,17 @@
 /**
- * tmux 子进程原语：专用 socket 上的命令执行与 shell 引用包装。
- * core/ 是依赖链的最底层：不依赖项目内其他模块，其他一切依赖 core/。
+ * tmux subprocess primitives: run commands on a dedicated socket, plus shell-quote wrapping.
  */
 import { spawn } from "node:child_process";
 
-/** 专用 tmux socket：子 agent 的所有会话都跑在这上面，与用户自己的 tmux server 隔离 */
+/** Dedicated tmux socket: all sub-agent sessions run here, separate from the user's own tmux server. */
 export const SOCKET = "pi-sub";
 
-/** shell 单引号安全包装：内联进 tmux run-shell 等命令串时防注入/断词 */
+/** Safe single-quote shell wrap: keeps a string in one piece when inlined into tmux run-shell commands. */
 export function shQuote(s: string): string {
 	return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** 通用进程运行器：收集 stdout/stderr。onSpawn 可拿到子进程引用（用于超时后 kill，如 wait-for 客户端） */
+/** Generic process runner: collects stdout/stderr. onSpawn exposes the child (used to kill it after a timeout, e.g. a wait-for client). */
 export function run(
 	cmd: string,
 	args: string[],
@@ -40,7 +39,7 @@ export function run(
 	});
 }
 
-/** 运行 tmux 命令。TMUX= 清空避免嵌套告警（等价 shell 里的 TMUX= 前缀）。 */
+/** Run a tmux command. TMUX= avoids the nested-session warning (same as a TMUX= prefix in the shell). */
 export function runTmux(
 	args: string[],
 	onSpawn?: (proc: import("node:child_process").ChildProcess) => void,
@@ -49,11 +48,11 @@ export function runTmux(
 }
 
 /**
- * 列出当前主会话所属的存活子 agent 会话。
+ * List the live sub-agent sessions that belong to the current main session.
  *
- * pi-sub 是跨主会话共享的专用 socket，因此不能把 list-sessions 的结果直接
- * 当成当前对话的子 agent。启动时会把主会话 ID写入 tmux session option，
- * 这里用同一字段过滤；没有归属标记的旧会话也不会误显示。
+ * pi-sub is a shared socket across main sessions, so list-sessions output is not automatically
+ * this conversation's sub-agents. We write the main session ID into a tmux session option at
+ * launch, then filter by that option here.
  */
 export async function listSubagentSessions(parentSessionId: string): Promise<string[]> {
 	if (!parentSessionId) return [];
@@ -63,8 +62,8 @@ export async function listSubagentSessions(parentSessionId: string): Promise<str
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => {
-			// owner 恒为格式串的最后一个字段；session 名若含 tab，其余段要 join 回去，
-			// 否则 owner 会取到名字碎片，该会话会被永久漏掉。
+			// the owner is always the last field; if the session name has a tab, join the rest back,
+			// otherwise the owner grabs a name fragment and that session is lost for good.
 			const parts = line.split("\t");
 			const owner = parts.pop();
 			return { session: parts.join("\t").trim(), owner };
@@ -75,15 +74,14 @@ export async function listSubagentSessions(parentSessionId: string): Promise<str
 }
 
 /**
- * 抓取某个会话 pane 的当前可见屏幕。`-p` 输出纯文本（不带 ANSI 属性），
- * 与人工 `tmux -L pi-sub attach` 看到的是同一屏。会话已结束时 code !== 0。
- * /attach 的选择列表用它取每个会话的最后一行作预览。
+ * Grab the current visible screen of one session's pane. -p prints plain text (no ANSI), the
+ * same screen a human sees with `tmux -L pi-sub attach`. code !== 0 if the session already ended.
  */
 export function captureSubagentPane(session: string): Promise<{ code: number; stdout: string; stderr: string }> {
 	return runTmux(["capture-pane", "-p", "-t", session]);
 }
 
-/** tmux 键名（C-b / M-a / F12 / C-M-x）→ 人类可读文案（Ctrl-b / Alt-a / F12 / Ctrl-Alt-x）。 */
+/** tmux key name (C-b / M-a / F12 / C-M-x) -> human text (Ctrl-b / Alt-a / F12 / Ctrl-Alt-x). */
 export function formatPrefixKey(raw: string): string {
 	let s = raw.trim();
 	if (!s) return "Ctrl-b";
@@ -105,9 +103,8 @@ export function formatPrefixKey(raw: string): string {
 }
 
 /**
- * pi-sub server 的前缀键可读文案（用户可自定义 prefix，默认 Ctrl-b）。
- * 子 agent 围观浮层里的退出提示用它，避免把 Ctrl-b 写死——用户改了 prefix 后提示会失真。
- * 用 -qv 取纯值（`show-options -g prefix` 的输出是 `prefix C-b` 两段，-v 只给 `C-b`）。
+ * Human text for the pi-sub server prefix key (users can change it, default Ctrl-b). Use -qv to
+ * get the bare value (`show-options -g prefix` prints `prefix C-b`, -v gives just `C-b`).
  */
 export async function subagentPrefixHint(): Promise<string> {
 	const r = await runTmux(["show-options", "-gqv", "prefix"]);
@@ -115,22 +112,22 @@ export async function subagentPrefixHint(): Promise<string> {
 }
 
 /**
- * 给围观者一套一眼可辨的 tmux 外观：紫色 status 栏 +「子 agent 围观」标签 + 常驻退出提示，
- * 与用户自己的 tmux 明确区分（子会话继承用户 tmux.conf，默认长相和主 tmux 一模一样）。
- *
- * 只改 display：capture-pane 抓不到 status 行，不影响 captureSubagentPane / 主会话数据通路。
- * 纯装饰——任一 set-option 失败也只是「没有染色」，调用方应忽略返回值，绝不影响子 agent 启动。
+ * Give watchers a look that differs from the user's own tmux: purple status bar + a "sub-agent
+ * watch" label + an always-on exit hint (sub-sessions inherit the user tmux.conf, so by default
+ * they look identical).
+ * Only display options change: capture-pane cannot see the status line, so captureSubagentPane is
+ * unaffected. Pure decoration, so a failed set-option just means no color; callers should ignore it.
  */
 export async function styleSubagentSession(session: string): Promise<void> {
 	const hint = await subagentPrefixHint();
-	// status-* 是会话选项，window-status-* 是窗口选项（-w），故分两组
+	// status-* are session options, window-status-* are window options (-w), hence two groups
 	const sessionOpts: Array<[string, string]> = [
 		["status", "on"],
 		["status-style", "bg=colour53,fg=colour231"],
 		["status-left-length", "30"],
-		["status-left", " #[bg=colour53,fg=colour231,bold] 子 agent 围观 "],
+		["status-left", " #[bg=colour53,fg=colour231,bold] sub-agent watch "],
 		["status-right-length", "40"],
-		["status-right", ` #[bg=colour213,fg=colour16,bold] 浮层内 ${hint} d 退出 `],
+		["status-right", ` #[bg=colour213,fg=colour16,bold] in popup ${hint} d to quit `],
 		["window-status-separator", "#[bg=colour53,fg=colour240]│"],
 	];
 	const windowOpts: Array<[string, string]> = [
