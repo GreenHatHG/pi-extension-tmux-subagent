@@ -1,21 +1,16 @@
 /**
- * 模式框架：task / advisor / web-research 三种委派模式的全部差异收敛为一份
- * SubagentMode 描述对象。launchSub 只面向这个接口，不再按模式 if-else 散布；
- * 新增第四种模式 = 在本目录加一个实例 + 必要时补一份 brief/preset，其他文件零改动。
+ * Mode framework: task / advisor / web-research differences are collapsed into one SubagentMode
+ * descriptor. launchSub only sees this interface, so a new mode = one instance + a brief/preset
+ * if needed.
  *
- * 模式差异的五个维度：
- * - brief：子 agent 简报模板（唯一上下文来源）→ briefs.ts
- * - presetFlags：子 agent pi 的预设 CLI flag → presets.ts
- * - extraEnvArgs：附加的 tmux -e 环境注入（如 web-research 的联网引导开关）
- * - display：简报/回复在 TUI 里的标签（主会话纯显示 entry，见 ui/subagent-entries.ts）
- * - 附加系统提示词/工具集整形（advisor 用 CLI 预设；web-research 在子 agent 进程内
- *   完成，见 session/web-bootstrap.ts，不属于本接口）
+ * Four axes of mode difference: brief (brief template), presetFlags (sub-agent pi CLI flags),
+ * extraEnvArgs (extra tmux -e injection), display (TUI label).
  */
 import { ENV_SUB_WEB } from "../core/env";
 import { type BriefOpts, buildAdvisorBrief, buildTaskBrief, buildWebResearchBrief } from "./briefs";
 import { advisorPresetFlags, webResearchPresetFlags } from "./presets";
 
-/** 简报/回复条目在 TUI 里的标签（渲染器在 ui/subagent-entries.ts，三个模式共用）。 */
+/** Labels for brief/reply entries in the TUI (all three modes share one renderer). */
 export interface SubagentDisplay {
 	briefLabel: string;
 	replyLabel: string;
@@ -25,11 +20,7 @@ export type ModeName = "task" | "advisor" | "web-research";
 
 export interface SubagentMode {
 	name: ModeName;
-	/** 子 agent 简报模板 */
-	/**
-	 * 子 agent 简报模板。opts 可选：advisor 取证栏目用（task / web-research 忽略），
-	 * 见 BriefOpts（briefs.ts）。
-	 */
+	/** Sub-agent brief template. opts is optional: used by the advisor forensics section (task / web-research ignore it). */
 	brief(
 		question: string,
 		context: string | undefined,
@@ -38,13 +29,13 @@ export interface SubagentMode {
 		opts?: BriefOpts,
 	): string;
 	/**
-	 * 子 agent pi 的预设 CLI flag（放在启动参数最前面；调用方 extraArgs 在后可覆盖
-	 * 同名单值 flag——pi 对 --model/--tools/--system-prompt 是后值覆盖前值）。
+	 * Preset CLI flags for the sub-agent pi (put first in the launch args; caller extraArgs come
+	 * after, and pi single-value flags are last-wins).
 	 */
 	presetFlags(useWatchdog: boolean): string[];
-	/** 附加 tmux -e 环境注入（已成对：flag 名与值交替）。收尾协议的差异不在模式，见 completion/。 */
+	/** Extra tmux -e injection (name/value pairs). */
 	extraEnvArgs(): string[];
-	/** 简报/回复在 TUI 里的标签（三个模式共用同一渲染器，只有标签不同） */
+	/** TUI labels for brief/reply. */
 	display: SubagentDisplay;
 }
 
@@ -53,7 +44,7 @@ export const taskMode: SubagentMode = {
 	brief: buildTaskBrief,
 	presetFlags: () => [],
 	extraEnvArgs: () => [],
-	display: { briefLabel: "子 agent 简报", replyLabel: "子 agent 回复" },
+	display: { briefLabel: "Sub-agent brief", replyLabel: "Sub-agent reply" },
 };
 
 export const advisorMode: SubagentMode = {
@@ -61,15 +52,14 @@ export const advisorMode: SubagentMode = {
 	brief: buildAdvisorBrief,
 	presetFlags: advisorPresetFlags,
 	extraEnvArgs: () => [],
-	display: { briefLabel: "advisor 咨询简报", replyLabel: "advisor 回复" },
+	display: { briefLabel: "Advisor brief", replyLabel: "Advisor reply" },
 };
 
 export const webResearchMode: SubagentMode = {
 	name: "web-research",
 	brief: buildWebResearchBrief,
 	presetFlags: () => webResearchPresetFlags(),
-	// web-research 引导：子 agent 进程的扩展 factory 检测到该变量后在 load 阶段
-	// 动态激活 pi-web-access 工具集（见 session/web-bootstrap.ts）
+	// web-research bootstrap: the sub-agent process loads the pi-web-access tool set at load time
 	extraEnvArgs: () => ["-e", `${ENV_SUB_WEB}=1`],
-	display: { briefLabel: "联网调研简报", replyLabel: "联网调研回复" },
+	display: { briefLabel: "Web research brief", replyLabel: "Web research reply" },
 };

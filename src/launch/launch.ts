@@ -1,9 +1,7 @@
 /**
- * 子 agent 启动编排：探测完成路径 → 选模式（SubagentMode）→ 准备简报与运行目录 →
- * tmux 拉起 pane → 注册完成信号 hook → 组装主会话侧的返回与运维文案。
- *
- * 主体不出现任何按模式 if-else：brief/presetFlags/extraEnvArgs 全部来自 SubagentMode
- * （modes/types.ts），收尾协议差异全部来自 CompletionProfile（completion/profile.ts）。
+ * Sub-agent launch orchestration: pick a mode -> prep the brief and run dir -> start the tmux pane
+ * -> register the done-signal hook. All mode differences come from SubagentMode (modes/types.ts),
+ * and all wrap-up protocol differences come from CompletionProfile.
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,19 +20,20 @@ import { type SubagentMode, taskMode } from "../modes/types";
 import { runVccCompact, type VccSummary } from "../modes/vcc";
 
 /**
- * 同名会话兜底检查：会话名带随机后缀，正常情况下不会命中；兜底场景仍不重复拉起，
- * 报告现状让用户决定。返回错误文案（命中）；undefined = 可以启动。
+ * The session name has a random suffix so this normally won't hit; but even in the fallback case we
+ * don't start a duplicate — report the current state and let the user decide.
+ * Returns the error text on a hit; undefined = safe to start.
  */
 async function existingSessionReport(session: string): Promise<string | undefined> {
 	const has = await runTmux(["has-session", "-t", session]);
 	if (has.code !== 0) return undefined;
 	const ls = await runTmux(["ls"]);
-	return `会话 ${session} 已存在，未重复启动。\n当前 ${SOCKET} socket 上的会话：\n${ls.stdout || ls.stderr}`;
+	return `Session ${session} already exists, not starting another one.\nSessions on the ${SOCKET} socket:\n${ls.stdout || ls.stderr}`;
 }
 
 /**
- * 建运行目录并写简报（权限仅属主可读）。上次同名任务残留的退出码会污染本次成败
- * 判定，启动前清掉。
+ * Create the run dir and write the brief (owner-only perms). A leftover exit file from a same-named
+ * task would poison this run's success check, so clear it before launch.
  */
 function prepareRunDir(paths: SubagentPaths, brief: string): void {
 	mkdirSync(paths.dir, { recursive: true });
@@ -47,29 +46,28 @@ function prepareRunDir(paths: SubagentPaths, brief: string): void {
 }
 
 /**
- * 给主会话 LLM 的等待/读取结论说明。等待命令带 timeout 防挂死；timeout 命中后
- * 重发即可（信号会被记住，见 wait-for 语义）；连续多次 timeout 且会话仍在时
- * capture-pane 看现场，有界重试——覆盖「LLM 忘调 stop_watchdog / watchdog max
- * 催促耗尽 / watchdog 未接管」等信号永不来的场景。
+ * Wait/read instructions for the main-session LLM. The wait command has a timeout so it can't hang
+ * forever; on timeout just resend it (tmux remembers the signal, see wait-for semantics); if it
+ * times out 2-3 times in a row and the session is still there, capture-pane to see what's going on
+ * — this covers cases where the signal never comes (the LLM forgot stop_watchdog / watchdog max
+ * nudges ran out / watchdog never took over).
  *
- * wait-for 语义（实测 0.85.1 自带 tmux）：-S 发出的信号会被 server 记住，稍后的
- * wait-for 立即返回，不存在「信号在等待空窗期被丢弃后重发永久阻塞」的问题。
- * timeout 命中后可以直接重发 wait-for 继续等。但等待必须有界：信号可能根本不会来
- * （子 agent LLM 未调 stop_watchdog、watchdog max 催促耗尽后直接 teardown 不发
- * ON_STOP、watchdog 未接管等），连续多次 timeout 且会话仍在时 capture-pane 看现场
- * 再决定等还是处置——等待方挂起比等待方超时更糟。
+ * wait-for semantics (tested): a signal sent with -S is remembered by the server, so a later
+ * wait-for returns at once — there is no "signal lost in the wait gap, resend blocks forever"
+ * problem. But waiting must be bounded: the signal may never come, and a hung waiter is worse than
+ * a timed-out one.
  */
 function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
-	return `需要结论时在 bash 执行 tmux -L ${SOCKET} wait-for ${paths.done}。等待必须有限制：用 bash 工具自带的 timeout 参数限时（建议 600s；是工具调用的参数，不要在命令里加 shell 的 timeout 前缀）。阻塞等待零 token。timeout 命中后重发本命令继续等即可（tmux 会记住已发的信号，不会永久阻塞）。若连续 2-3 次 timeout 且 \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` 显示会话仍在：执行 \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等、kill-session 后按失败处理。返回后 read ${paths.artifactPath}。若 exit 非 0 或回复为空，read ${paths.logPath} 看子 agent 的 stderr 找根因。${exitNote}`;
+	return `To get the result, run in bash: tmux -L ${SOCKET} wait-for ${paths.done}. Waiting must be bounded: use the bash tool's own timeout argument (600s is a good pick; it is a tool-call argument, do not add a shell timeout prefix inside the command). Blocking waits cost zero tokens. On timeout just resend this command to keep waiting (tmux remembers sent signals, so it won't block forever). If it times out 2-3 times in a row and \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` still shows the session: run \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` to see what's up — the sub-agent may have skipped stop_watchdog or be stuck, so keep waiting or kill-session and treat it as failed. After it returns, read ${paths.artifactPath}. If exit is non-zero or the reply is empty, read ${paths.logPath} for the sub-agent's stderr to find the root cause. ${exitNote}`;
 }
 
 export interface LaunchResult {
 	ok: boolean;
-	/** 给主会话模型的说明（进入 LLM 上下文；应尽量短） */
+	/** Note for the main-session model (goes into the LLM context; keep it short). */
 	text: string;
-	/** 给用户的运维速查（只在 TUI 渲染，不进 LLM 上下文） */
+	/** Operator cheatsheet for the user (TUI only, not in the LLM context). */
 	ops?: string;
-	/** 简报原文（主会话 appendEntry 打进 TUI，不进 LLM 上下文） */
+	/** Brief text (main session appendEntry into the TUI, not in the LLM context). */
 	brief?: string;
 	session?: string;
 	artifactPath?: string;
@@ -78,44 +76,44 @@ export interface LaunchResult {
 	logPath?: string;
 }
 
-/** 常用运维命令速查：attach 围观 / 看进度 / 读交付物 / 等完成 / 杀会话，全部可直接复制粘贴 */
+/** Common operator commands: attach/watch, check progress, read deliverable, wait for done, kill session. Ready to copy-paste. */
 function opsCheatsheet(session: string, artifactPath: string, exitFile: string, done: string): string {
-	return `# 围观子 agent（实时画面；推荐在主会话里 /attach 开浮层——浮层内按前缀键 d 退出，只 detach、不影响子 agent；任务完成后会话自动关闭，回看执行过程读 pi 会话历史 jsonl）
-# 注意：手动在自己 tmux 里嵌套 attach，前缀会被外层先吃掉——Ctrl-b d 会 detach 整个 tmux；要退出内层需连按两次前缀（Ctrl-b Ctrl-b d），或直接用 /attach 浮层
+	return `# Watch the sub-agent live (recommended: /attach in the main session opens a popup — press prefix key d to leave; it only detaches and does not affect the sub-agent. The session closes itself when the task is done; read the pi session history jsonl to review the run)
+# Note: attaching nested inside your own tmux eats the prefix key first — Ctrl-b d detaches the whole tmux; to leave the inner one press the prefix twice (Ctrl-b Ctrl-b d), or just use /attach
 tmux -L pi-sub attach -t ${session}
 
-# 看当前进度（不进入，只抓最后一屏）
+# Check current progress without entering (grabs the last screen)
 tmux -L pi-sub capture-pane -t ${session} -p | tail -30
 
-# 看所有运行中的子 agent
+# List all running sub-agents
 tmux -L pi-sub ls
 
-# 读交付物（写完后）
+# Read the deliverable (after it is written)
 cat ${artifactPath}
 
-# 阻塞等它完成（子 agent 完成发信号或进程退出时自动发信号，无论成败；命令随即返回）
-# 建议用工具 timeout 限时跑（如 600s）：tmux 会记住已发的信号，timeout 命中后
-# 直接重发本命令继续等即可（不会永久阻塞）；若连续多次 timeout 且
-# tmux -L pi-sub has-session -t <会名> 显示会话仍在，用上面的 capture-pane
-# 看现场——子 agent 可能没调 stop_watchdog 或已挂死，酌情继续等或 kill-session
-# 按失败处理
+# Block until it finishes (the sub-agent sends a signal when done, or when the process exits, either way; the command returns right after)
+# Run it with the tool's timeout (e.g. 600s): tmux remembers sent signals, so on timeout
+# just resend this command (it won't block forever); if it times out several times and
+# tmux -L pi-sub has-session -t <session> still shows the session, use capture-pane above
+# to see what's up — the sub-agent may have skipped stop_watchdog or be stuck; keep waiting
+# or kill-session and treat it as failed
 tmux -L pi-sub wait-for ${done}
 
-# 退出码（0=正常收尾；非 0=失败；文件缺失=被强杀/崩溃）
+# Exit code (0 = clean wrap-up; non-zero = failure; missing file = killed/crash)
 cat ${exitFile}
 
-# 只杀这一个子 agent
+# Kill just this sub-agent
 tmux -L pi-sub kill-session -t ${session}
 
-# 全部结束后的收尾（清掉专用 socket 上所有残留，不影响你自己的 tmux）
+# Final cleanup after everything (clears all leftovers on the dedicated socket, not your own tmux)
 tmux -L pi-sub kill-server`;
 }
 
-/** 启动成功的结果组装：速查表只给用户（放 details，经 renderResult 渲染，不进 LLM 上下文），等待说明进 LLM 上下文 */
+/** Assemble the success result: the cheatsheet goes only to the user (details are rendered by renderResult, not into the LLM context); the wait instructions go into the LLM context. */
 function startedResult(paths: SubagentPaths, completion: CompletionProfile, brief: string): LaunchResult {
 	return {
 		ok: true,
-		text: `已启动子 agent（交付物：${paths.artifactPath}）。${buildMainAgentNote(paths, completion.exitNote)}`,
+		text: `Sub-agent started (deliverable: ${paths.artifactPath}). ${buildMainAgentNote(paths, completion.exitNote)}`,
 		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done),
 		session: paths.session,
 		artifactPath: paths.artifactPath,
@@ -127,11 +125,8 @@ function startedResult(paths: SubagentPaths, completion: CompletionProfile, brie
 }
 
 /**
- * 启动一个隔离的 pi 子 agent。默认任务模式（taskMode）：
- * - advisor 模式：咨询简报 + 限制工具集 + 换系统提示词（--model 预设由调用方经
- *   extraArgs 注入，见 tools/advisor.ts 的接线）
- * - web-research 模式：联网调研简报 + 预设 flag + 注入引导环境变量（子 agent 进程内
- *   动态激活 pi-web-access，见 session/web-bootstrap.ts）
+ * Start an isolated pi sub-agent. Defaults to task mode (taskMode): the brief, tool set and system
+ * prompt for advisor / web-research modes come from their own SubagentMode.
  */
 export async function launchSub(
 	pi: ExtensionAPI,
@@ -140,21 +135,21 @@ export async function launchSub(
 	mode: SubagentMode = taskMode,
 	extraArgs: string[] = [],
 	opts?: {
-		/** advisor 取证：主会话 jsonl 路径与 pi-vcc CLI 调用命令，透传给简报的取证栏目 */
+		/** Advisor forensics: main-session jsonl path and pi-vcc CLI command, passed to the brief's forensics section. */
 		sessionFile?: string;
 		vccCli?: string;
-		/** 启动该子 agent 的主会话 ID；由工具执行上下文提供。 */
+		/** Main session ID that started this sub-agent. */
 		parentSessionId?: string;
 	},
 ): Promise<LaunchResult> {
 	if (!question.trim()) {
-		return { ok: false, text: "缺少任务描述（question）。" };
+		return { ok: false, text: "Missing task description (question)." };
 	}
 
 	const useWatchdog = isWatchdogAvailable(pi);
 	const parentSessionId = opts?.parentSessionId;
 	if (!parentSessionId) {
-		return { ok: false, text: "无法确定当前主会话，未启动子 agent。" };
+		return { ok: false, text: "Could not figure out the current main session; sub-agent not started." };
 	}
 	const paths = resolvePaths(`${kebab(question)}-${shortId()}`);
 	const completion = resolveCompletion(useWatchdog, paths);
@@ -164,7 +159,8 @@ export async function launchSub(
 		return { ok: false, text: clash };
 	}
 
-	// advisor 取证第一级：vcc 压缩摘要预生成（目录先建；失败不阻塞，简报降级为 recall-only）
+	// Advisor forensics step 1: pre-generate the vcc compressed summary (create the dir first; a
+	// failure does not block, the brief falls back to recall-only)
 	let vccSummary: VccSummary | undefined;
 	if (opts?.sessionFile && opts?.vccCli) {
 		mkdirSync(paths.dir, { recursive: true });
@@ -178,13 +174,12 @@ export async function launchSub(
 	});
 	prepareRunDir(paths, brief);
 
-	// 模式预设 flag 在前（可被覆盖的单值 flag 见 SubagentMode.presetFlags 注释），
-	// 调用方的 extraArgs 在后：pi 的参数解析对 --model/--tools/--system-prompt 这类
-	// 单值 flag 是后值覆盖前值，后者可覆盖前者的同名 flag。
+	// Mode preset flags first, caller extraArgs after: for single-value flags like
+	// --model/--tools/--system-prompt, pi uses last-wins, so the caller can override a same-named flag.
 	const flags: string[] = [...mode.presetFlags(useWatchdog), ...extraArgs];
 
-	// 注意：-e 是 new-session 命令的参数，必须跟在 new-session 后面；
-	// 放在 tmux 全局选项位置会报 "unknown option -- e"
+	// -e is a new-session argument and must follow new-session; putting it in the tmux global
+	// option position gives "unknown option -- e"
 	const launch = await runTmux([
 		"new-session",
 		...baseEnvArgs(paths),
@@ -200,31 +195,32 @@ export async function launchSub(
 		buildPaneCommand(completion, flags, paths),
 	]);
 	if (launch.code !== 0) {
-		return { ok: false, text: `tmux 启动失败：${launch.stderr || launch.stdout}` };
+		return { ok: false, text: `tmux launch failed: ${launch.stderr || launch.stdout}` };
 	}
 
-	// 再写一份 tmux session option：list-sessions 可一次性带出归属，不必逐个
-	// show-environment；启动期环境变量仍供子 agent 进程使用。
+	// Also write a tmux session option: list-sessions can then bring back the owner in one shot,
+	// no per-session show-environment; the startup env vars still serve the sub-agent process.
 	await runTmux(["set-option", "-t", paths.session, "@pi-sub-parent-session", parentSessionId]);
 
-	// 围观浮层外观：给子会话染一套与主 tmux 明显不同的 status 栏，并常驻退出提示。
-	// 纯装饰，失败（runTmux 内部已吞错）只是没染色，绝不影响子 agent 启动。
+	// Watch popup look: give the sub-session a status bar that differs from the main tmux. Pure
+	// decoration; a failure just means no color.
 	await styleSubagentSession(paths.session);
 
 	const hookError = await registerPaneDiedHook(paths);
 	if (hookError) {
 		if (completion.rollbackOnHookFailure) {
-			// -p 回退唯一信号来源是 pane-died hook（brief 不要求 LLM 发信号），缺失必须回滚
+			// The batch path doesn't rely on the LLM to send a signal; the pane-died hook is the only
+			// source, so a failure must roll back
 			await runTmux(["kill-session", "-t", paths.session]);
 			return {
 				ok: false,
-				text: `注册 pane-died hook 失败（${hookError}），已回收会话；完成信号无法保证送达，未启动子 agent。`,
+				text: `Failed to register the pane-died hook (${hookError}); session reclaimed. The done signal can't be guaranteed, so the sub-agent was not started.`,
 			};
 		}
-		// watchdog 路径不回滚：ON_STOP 钩子仍会发信号，只是失去崩溃兜底
+		// Watchdog path does not roll back: the ON_STOP hook still sends the signal, we just lose the crash backstop
 		return {
 			ok: true,
-			text: `已启动子 agent，但注册 pane-died hook 失败（${hookError}）：进程崩溃时不再自动发完成信号，需人工围观或超时排查。交付物：${paths.artifactPath}`,
+			text: `Sub-agent started, but the pane-died hook failed to register (${hookError}): a crash no longer sends the done signal automatically, so watch it by hand or check on timeout. Deliverable: ${paths.artifactPath}`,
 			session: paths.session,
 			artifactPath: paths.artifactPath,
 			exitFile: paths.exitFile,

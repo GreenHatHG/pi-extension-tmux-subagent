@@ -14,49 +14,46 @@ import { setupAttachCommand } from "./ui/attach-command";
 import { registerSubagentEntryRenderers } from "./ui/subagent-entries";
 
 export default async function (pi: ExtensionAPI) {
-	// 进程角色只解析一次：此后所有「主会话 / 子 agent」分支都以 role 为准，各模块
-	// 不再各自读 process.env（见 core/env.ts 的 resolveProcessRole）。
+	// Parse the process role once; every main-session/sub-agent branch uses role after that
 	const role = resolveProcessRole();
 
-	// web-research 子 agent 引导：触发只看 role.web（PI_SUB_WEB），与 PI_SUBAGENT
-	// 门禁无关。必须在子 agent 分支 return 之前执行（子 agent 进程在 load 阶段动态
-	// 激活 pi-web-access 工具集，见 session/web-bootstrap.ts）；主会话 role.web 为 false。
+	// web-research sub-agent bootstrap: triggered only by role.web (PI_SUB_WEB), separate from the
+	// PI_SUBAGENT gate. Must run before the sub-agent branch returns: the sub-agent process loads
+	// the pi-web-access tool set at load time. role.web is false in the main session.
 	if (role.web) await bootstrapWebResearch(pi);
 
-	// 子 agent pane 内（启动时经 tmux -e 注入 PI_SUBAGENT=1）不注册任何工具，直接返回：
-	// 门禁无条件生效（防嵌套委派），watchdog 缺位的自检钩子由 setupSubagentSelfCheck
-	// 按 role.watchdog 决定是否注册，见 session/gate.ts。
+	// Register no tools inside a sub-agent pane (no nested delegation): the gate always applies.
+	// setupSubagentSelfCheck decides whether to register the missing-watchdog self-check by role.watchdog.
 	if (role.kind === "sub") {
 		setupSubagentSelfCheck(pi, role);
 		return;
 	}
 
-	// ---------- /attach 实时围观窗口 ----------
-	// 在用户自己的 tmux 里 new-window，attach 到 pi-sub 的某个子 agent 会话：
-	// 主会话侧查看子 agent 执行过程的唯一入口（真实画面、可交互、随时 detach）。
+	// ---------- /attach live watch window ----------
+	// Open a window in the user's own tmux and attach to a pi-sub sub-agent session
 	setupAttachCommand(pi);
 
-	// ---------- 子 agent 简报/回复的 TUI 显示 ----------
-	// 与三个工具的注册解耦：spawn_sub / advisor / web_research 共用同一渲染器，
-	// 标签由各模式的 SubagentMode.display 提供（见 ui/subagent-entries.ts）。
+	// ---------- TUI display of sub-agent briefs/replies ----------
+	// Decoupled from tool registration: all three tools share one renderer, and labels come from
+	// each mode's SubagentMode.display
 	registerSubagentEntryRenderers(pi);
 
-	// ---------- advisor（可选功能，默认不注册：未配置时主模型看不到这个工具） ----------
-	// enabled 蕴含 model 非空（resolveAdvisor 保证）：沿用默认模型就没有 advisor 的意义
+	// ---------- advisor (optional, off by default: the main model can't see this tool when unconfigured) ----------
 	const advisor = resolveAdvisor();
 	const advisorSession: SessionAdvisor = { enabled: advisor.enabled, model: advisor.model };
-	// 过滤器必须先于页脚/启动提示注册：session_start 时先根据 ctx.model 更新状态，
-	// 再让后续 handler 展示最终状态。
+	// Register the guard before the footer/startup notices: on session_start it updates state from
+	// ctx.model first, so later handlers show the final state.
 	if (advisor.enabled && advisor.model) {
 		setupAdvisorModelGuard(pi, advisor.disabledModels, advisorSession);
 	}
-	// 快捷设置命令始终注册（与 enabled 无关）：否则关掉 advisor 后就没有入口把它重新打开
+	// The settings command is always registered (regardless of enabled), else there is no way to
+	// turn advisor back on once it is off
 	setupAdvisorSettings(pi, advisorSession);
 	if (advisor.enabled && advisor.model) {
 		const sessionModel = advisor.model;
 		setupAdvisor(pi, sessionModel, (question, context, sessionFile, parentSessionId) => {
-			// 模型/思考档位每次调用现读配置（/advisor 面板改了下一次调用即生效）；
-			// 读不到（被清空）则回退会话启动时的模型。sessionFile + vccCli 透传给简报取证栏目。
+			// Read model/thinking from config on every call (a /advisor panel change applies next call);
+			// if missing (cleared), fall back to the model from session start
 			const model = resolveAdvisorModel() ?? sessionModel;
 			return launchSub(pi, question, context, advisorMode, [`--model ${shQuote(model)}`], {
 				sessionFile,
@@ -65,16 +62,16 @@ export default async function (pi: ExtensionAPI) {
 			});
 		});
 	} else if (advisor.missingModel) {
-		// 配了 enabled: true 但没配模型：不开启，直接在会话里提示用户补配置
+		// enabled: true with no model: stay off and tell the user in the session to add config
 		notifyAdvisorMissingModel(pi);
 	}
 
-	// ---------- web_research（默认开启）----------
+	// ---------- web_research (on by default) ----------
 	setupWebResearch(pi, (question, context, _sessionFile, parentSessionId) =>
 		launchSub(pi, question, context, webResearchMode, [], { parentSessionId }),
 	);
 
-	// ---------- spawn_sub（任务模式，默认开启）----------
+	// ---------- spawn_sub (task mode, on by default) ----------
 	setupSpawnSub(pi, (question, context, _sessionFile, parentSessionId) =>
 		launchSub(pi, question, context, taskMode, [], { parentSessionId }),
 	);

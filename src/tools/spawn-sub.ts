@@ -1,6 +1,6 @@
 /**
- * spawn_sub 工具（主会话，任务模式的入口）：把多步/上下文很重的任务委派给
- * tmux 里隔离运行的 pi 子 agent。工具定义在此，启动编排见 launch/launch.ts。
+ * spawn_sub tool (main session, task mode): delegate a multi-step or context-heavy task to a pi
+ * sub-agent isolated in tmux. Launch orchestration is in launch/launch.ts.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -8,20 +8,20 @@ import { taskMode } from "../modes/types";
 import { showSubagentBrief, watchSubagentReply } from "../ui/subagent-entries";
 import { type LaunchFn, renderResultWithOps, startedToolResult } from "./shared";
 
-/** 注册 spawn_sub 工具（默认调用，无配置门槛） */
+/** Register the spawn_sub tool. */
 export function setupSpawnSub(pi: ExtensionAPI, launch: LaunchFn): void {
 	pi.registerTool({
 		name: "spawn_sub",
-		label: "子 agent 委派",
+		label: "Sub-agent delegation",
 		description: [
 			"Delegate a task to an isolated pi sub-agent; the full deliverable is written to a system-generated path",
 			"(/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response.",
 			"Do not put the deliverable path in `question` — the brief the sub-agent receives already carries it",
 		].join(" "),
 		promptSnippet: "delegate multi-step or context-heavy tasks to an isolated tmux sub-agent",
-		// 只写调用前的决策信息（何时用、context 要自包含）。
-		// 调用后怎么拿结论（wait-for 频道名、exit 文件判读）依赖运行时才知道的值，
-		// 只能写在工具返回的 mainAgentNote 里，这里不放。
+		// Only the pre-call decision info goes here; how to get the result after the call (wait-for
+		// channel, exit reading) depends on runtime values, so it can only live in the mainAgentNote
+		// returned by the tool
 		promptGuidelines: [
 			"spawn_sub: use for multi-step, exploration-heavy, or token-heavy tasks; keep single-step work in the main session.",
 			"spawn_sub: distill everything the sub-agent needs into the context parameter before calling — file paths, conclusions so far, URLs, constraints.",
@@ -41,15 +41,14 @@ export function setupSpawnSub(pi: ExtensionAPI, launch: LaunchFn): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const r = await launch(params.question, params.context, undefined, ctx.sessionManager.getSessionId());
 			if (r.ok) {
-				// 简报 + 完成后回复都只进 TUI（appendEntry，不进 LLM 上下文），
-				// 等待/读取协议不受影响（见 ui/subagent-entries.ts）。
+				// Brief/reply go through appendEntry to the TUI only, not into the LLM context
 				showSubagentBrief(pi, r, taskMode.display);
 				watchSubagentReply(pi, r, taskMode.display);
 			}
 			return startedToolResult(r.text, r.ops);
 		},
 		renderResult(result, _options, theme, _context) {
-			return renderResultWithOps(result, "已启动。常用操作（复制到任意终端）：", theme);
+			return renderResultWithOps(result, "Started. Common commands (copy into any terminal):", theme);
 		},
 	});
 }

@@ -1,7 +1,7 @@
 {
 	"name": "pi-extension-subagent",
 	"version": "1.0.2",
-	"description": "pi 插件：spawn_sub 工具。把多步或上下文很重的任务委派给 tmux 里隔离运行的 pi 子 agent，交付物写到 /tmp/pi-sub-<name>/result.md。",
+	"description": "pi extension: the spawn_sub tool. Delegate multi-step or context-heavy tasks to a pi sub-agent isolated in tmux; the deliverable is written to /tmp/pi-sub-<name>/result.md.",
 	"main": "src/index.ts",
 	"keywords": [
 		"pi-package",
