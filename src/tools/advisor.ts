@@ -113,15 +113,12 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 		].join(" "),
 		promptSnippet:
 			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
-		// Rules borrowed from rpiv-advisor, rewritten for this project's "context must be self-contained" style.
+		// Rules borrowed from rpiv-advisor, merged down to four so the main session's context stays small:
+		// when to call, how to write `context`, what to do with the answer, and when not to bother.
 		promptGuidelines: [
-			"advisor: call BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption; orientation (finding files, fetching a source, seeing what's there) is not substantive work.",
-			"advisor: also call when stuck (errors recurring, approach not converging, results that don't fit) or when considering a change of approach.",
-			"advisor: call when you believe the task is complete — make the deliverable durable FIRST (write the file, save the result), because the advisor call takes time and a durable result survives a session that ends mid-call.",
-			"advisor: write `context` as claims under audit, not established facts — state your plan/interpretation, mark which premises you verified and which you are assuming; the advisor is instructed to verify load-bearing unverified premises itself and to override your framing where the session record disagrees.",
-			"advisor: every file path inside the context parameter MUST be absolute — resolve relative paths against your cwd before calling.",
-			"advisor: give its advice serious weight — if a step fails empirically or evidence contradicts a specific claim, surface the conflict in another advisor call instead of silently switching branches.",
-			"advisor: after each result, restate its key guidance in your next visible reply to the user — they often cannot see collapsed tool results. The full advice lives in the result.md path given in the tool response: wait for completion as instructed there, read the file, then restate what it actually says.",
+			"advisor: call BEFORE substantive work (before writing, before committing to an interpretation, before building on an assumption; orientation is not substantive work), when stuck (errors recurring, approach not converging, results that don't fit) or when changing approach, and before declaring done — make the deliverable durable FIRST, since the call takes time and a durable result survives a session that ends mid-call.",
+			"advisor: write `context` as claims under audit, not established facts — the plan/interpretation to review plus its key premises, marking what you verified and what you assume. Every file path in it MUST be absolute (resolve against your cwd): the advisor cannot resolve relative paths.",
+			"advisor: give the advice serious weight — if a step fails empirically or evidence contradicts a specific claim, surface the conflict in another advisor call instead of silently switching branches. Then read the result.md path the tool response gives you and restate its key guidance in your next visible reply (the user often cannot see collapsed tool output).",
 			"advisor: not for trivial lookups where the next action is dictated by tool output you just read — it adds latency and pays off on judgment calls.",
 		],
 		parameters: Type.Object({

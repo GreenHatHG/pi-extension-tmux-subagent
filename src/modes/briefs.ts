@@ -43,17 +43,12 @@ ${context?.trim() || "(none)"}
 ${completion}
 ## Boundaries
 - Don't delegate to a new sub-agent (spawn_sub): you are the one executing the brief; delegation belongs to the main session only
-- Always pass -L ${SOCKET} (the dedicated socket) to tmux commands; never run any kill against the default tmux server`;
+- tmux, if you use it at all: read-only inspection on -L ${SOCKET} (capture-pane/has-session/ls); never kill anything, and never touch the default tmux server`;
 }
 
 /** Stable list of recall CLI usage. */
-function recallCliGuide(vccCli: string, sessionFile: string): string {
-	return `  - Search: \`${vccCli} recall ${sessionFile} <keywords>\` (multiple words are ranked by relevance; hits show only a local snippet)
-  - Full text: \`${vccCli} recall ${sessionFile} --expand N1,N2\` (N is the #N of a hit; toolResult/bash output is not truncated)
-  - A file's content at the time: pass \`#N:path\` as the query (\`#N:path:full\` for all of it); it reads the version recorded in the session's tool-call arguments, so later edits are still visible
-  - Paging: \`--page N\`; switch branch: \`--scope all\`; list changed files: \`--mode touched\`
-  - More usage (page window, ambiguous #N, exit code rules): \`${vccCli} --help\` (run it only when the templates above are not enough; don't explore just to read the manual)`;
-}
+const recallCliGuide = (vccCli: string, sessionFile: string): string =>
+	`  - Search: \`${vccCli} recall ${sessionFile} <keywords>\` (multiple words are ranked by relevance; hits show only a local snippet)\n  - More usage: \`${vccCli} --help\` (only when the line above is not enough — don't explore just to read the manual)`;
 
 /** Advisor forensics section (falls back by availability: pre-generated summary > recall CLI > session file only). */
 function buildAdvisorForensics(opts?: BriefOpts): string {
@@ -175,5 +170,5 @@ ${today} (use it to judge freshness and the recencyFilter value)
 ${completion}
 ## Boundaries
 - Use bash only for auxiliary search/retrieval work (e.g. processing tool output text); never as a way to get online
-- Always pass -L ${SOCKET} (the dedicated socket) to tmux commands; never run any kill against the default tmux server`;
+- tmux, if you use it at all: read-only inspection on -L ${SOCKET}; never kill anything, and never touch the default tmux server`;
 }
