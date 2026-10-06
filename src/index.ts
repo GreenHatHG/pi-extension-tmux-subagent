@@ -11,6 +11,7 @@ import { notifyAdvisorMissingModel, setupAdvisor, setupAdvisorModelGuard } from 
 import { type SessionAdvisor, setupAdvisorSettings } from "./tools/advisor-settings";
 import { setupSpawnSub } from "./tools/spawn-sub";
 import { setupWebResearch } from "./tools/web-research";
+import { registerAgentWidgetEntry, setupAgentWidget } from "./ui/agent-widget";
 import { setupAttachCommand } from "./ui/attach-command";
 import { registerSubagentEntryRenderers } from "./ui/subagent-entries";
 
@@ -38,6 +39,12 @@ export default async function (pi: ExtensionAPI) {
 	// ---------- /attach live watch window ----------
 	// Open a window in the user's own tmux and attach to a pi-sub sub-agent session
 	setupAttachCommand(pi);
+
+	// ---------- live sub-agent list above the editor ----------
+	// Display only: an entry renderer owns the widget and a poll mirrors this conversation's tmux
+	// sessions into it. The session_start handler appends that entry for every interactive session.
+	registerAgentWidgetEntry(pi);
+	setupAgentWidget(pi);
 
 	// ---------- TUI display of sub-agent briefs/replies ----------
 	// Decoupled from tool registration: all three tools share one renderer, and labels come from
