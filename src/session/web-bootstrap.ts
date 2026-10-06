@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { WATCHDOG_TOOL } from "../completion/profile";
 import { onEvent } from "../registry";
 
 /** This module's file path: jiti (CJS transform) injects __filename; pure ESM falls back to import.meta.url. */
@@ -142,7 +143,7 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 		const { source, path = "" } = tool.sourceInfo ?? {};
 		if (source === "builtin") return builtinTools.has(tool.name);
 		return (
-			tool.name === "watchdog_decide" ||
+			tool.name === WATCHDOG_TOOL ||
 			webAccessToolNames.has(tool.name) ||
 			(webAccessDir !== undefined && path.startsWith(`${webAccessDir}/`))
 		);
@@ -163,7 +164,7 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 		"session_start",
 		{
 			where: "session/web-bootstrap.ts:tool narrowing",
-			note: "web-research sub-agent: narrow the tool set by source at session_start (builtin keeps only read/bash/edit/write + watchdog_decide + pi-web-access)",
+			note: `web-research sub-agent: narrow the tool set by source at session_start (builtin keeps only read/bash/edit/write + ${WATCHDOG_TOOL} + pi-web-access)`,
 		},
 		() => {
 			try {
