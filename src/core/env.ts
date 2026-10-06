@@ -21,8 +21,14 @@ export const ENV_WATCHDOG = "PI_WATCHDOG";
 export const ENV_SUB_WEB = "PI_SUB_WEB";
 
 /**
- * Fences the advisor's bash to read-only forensics. Owned by the bash-guard extension (it reads this
- * var itself), injected here so the two extensions never have to know about each other's config.
+ * Fences the advisor's bash to read-only forensics. Owned by the bash-guard extension, which reads
+ * this var on every tool call; injected here so the two extensions never have to know about each
+ * other's config. Absent extension = the var is simply never read.
+ *
+ * Contract: "advisor" means deny-by-default read-only (see pi-extension-bash-guard src/read-only.ts);
+ * any other non-empty value blocks all bash (fail closed, so a typo can't hand out a full shell).
+ * If another mode ever needs its own allowed CLI, that should be a SECOND env var read by
+ * bash-guard, rather than teaching bash-guard about this repo's config.
  */
 export const ENV_BASH_GUARD_MODE = "PI_BASH_GUARD_MODE";
 

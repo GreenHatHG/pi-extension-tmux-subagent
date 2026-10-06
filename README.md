@@ -88,7 +88,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 `advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog,bash`（bash 承担取证：配 `vccCli` 时有 L1 recall CLI；L3 只读核实特定工件恒可用，见下）。
 
-**bash 默认被收成只读**：起 advisor 时会注入 `PI_BASH_GUARD_MODE=advisor`（见 `src/modes/types.ts`），装了 `pi-extension-bash-guard` 的机器上，它的 bash 会在执行前过一道只读白名单——放行只读文本工具、带 `-l`/`-c`/`-m` 的 `rg`、只读的 `git`/`tmux` 子命令和 `pi-vcc` CLI，拦下包管理器（`pnpm test` 这类）、解释器、网络、写文件和重定向。没装 bash-guard 时这个变量没人读，等于无事发生。
+**bash 默认被收成只读**：起 advisor 时会注入 `PI_BASH_GUARD_MODE=advisor`（见 `src/modes/types.ts`），装了 `pi-extension-bash-guard` 的机器上，它的 bash 会在执行前过一道只读白名单（`pi-extension-bash-guard` 的 `src/read-only.ts`）——放行只读文本工具、只读的 `git`/`tmux` 子命令和 recall CLI 用的 `bun <script>`/`pi-vcc`，拦下包管理器（`pnpm test` 这类）、解释器、网络、写文件、`cat`/`tee` 和一切 `>` 重定向；引号没闭合时按危险处理（fail closed）。被拦的命令会带 `[BASH READ-ONLY FENCE]` 前缀返回，不会错认成真实报错；状态栏在围栏里显示 `🛡 read-only`。没装 bash-guard 时这个变量没人读，等于无事发生；同一套 env 耦合也可以给别的模式复用（不认识的 mode 值会让 bash 全被拦，方向是安全的）。
 
 **默认不注册**：未配置时主模型看不到这个工具，promptGuidelines 也不注入（零开销）。开启即配置：
 
