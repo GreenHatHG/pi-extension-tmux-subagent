@@ -5,6 +5,7 @@ import { shQuote } from "./core/tmux";
 import { launchSub } from "./launch/launch";
 import { advisorMode, taskMode, webResearchMode } from "./modes/types";
 import { setupSubagentSelfCheck } from "./session/gate";
+import { setupSubagentReaper } from "./session/reap";
 import { bootstrapWebResearch } from "./session/web-bootstrap";
 import { notifyAdvisorMissingModel, setupAdvisor, setupAdvisorModelGuard } from "./tools/advisor";
 import { type SessionAdvisor, setupAdvisorSettings } from "./tools/advisor-settings";
@@ -28,6 +29,11 @@ export default async function (pi: ExtensionAPI) {
 		setupSubagentSelfCheck(pi, role);
 		return;
 	}
+
+	// ---------- no orphan panes ----------
+	// A pane left behind keeps running commands on the user's machine with nobody watching, so
+	// closing this main session closes the panes it started (session/reap.ts)
+	setupSubagentReaper(pi);
 
 	// ---------- /attach live watch window ----------
 	// Open a window in the user's own tmux and attach to a pi-sub sub-agent session

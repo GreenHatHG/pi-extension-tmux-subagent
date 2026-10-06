@@ -64,6 +64,16 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 3. 主会话用 `tmux wait-for` 阻塞等待完成信号（零 token 消耗），完成后 read result.md。
 
+4. 主会话自己退出（`quit`，含 SIGTERM / 关终端发来的 SIGHUP）或被替换（`/new`、`/resume`、
+   `/fork`）时，把**本会话启动的所有子 agent pane 一起关掉**（`src/session/reap.ts`，按
+   `@pi-sub-parent-session` 过滤）。不这么做的后果：子 agent 的收尾只靠它自己跑到
+   `stop_watchdog`，主会话先死就没人管——那个 pane 会一直活着继续跑命令，而它的 owner
+   会话已经不存在，`/attach`（只列当前会话）永远看不到它。扩展重载（`reload`）**不关**：
+   那时主进程还活着，用户可能正开着 `/attach` 看。
+
+   **仍未覆盖**：主会话进程被 `SIGKILL`、或崩溃（`uncaughtException`）时，pi 内核不走优雅
+   退出、不发 `session_shutdown`，这一层就收不到通知，pane 仍会变成孤儿。
+
 ### 注意事项
 
 - **查看子 agent 的执行过程**：两条路径下任务完成后会话都会自动关闭（watchdog 路径由 stop_watchdog 触发，-p 路径随进程退出）。运行期间可以**实时围观**：主会话里输入 `/attach` 会弹出当前对话启动的子 agent 列表（选一个即开浮层；不会混入其他对话的子 agent），或 `/attach <会话名>`（Tab 补全会话名）直接开——在你的 tmux 上弹一个 display-popup 浮层，attach 到那个子 agent 的 pane：真实画面、实时推进。浮层做了整套视觉区分，不会和主 tmux 混淆：外层是 `-b double` 边框 + 粉色标题，内层子会话的 status 栏被染成紫色并常驻「浮层内 `<前缀>` d 退出」提示。**退出只用前缀键 `d`**（默认 `Ctrl-b d`；前缀可在 tmux.conf 自定义，浮层提示会显示你实际的前缀）——只 detach 这个 attach，子 agent 不受影响。**`Ctrl-c` / `Esc` 不是退出**：它们会被原样送进子 agent（可能打断它），别按。浮层里前缀进内层，滚轮 / 前缀 + `[` 可回看历史。注意这是普通 attach：前缀 + `x`/`&`/`:` 会真的杀掉会话、键盘也会打进 pane（要防误杀可把命令里的 `attach` 换成 `attach -r`，代价是只读模式下不能滚动）。子 agent 结束时浮层自动关闭（需 tmux ≥ 3.3：`-b`/`-S`/`-T` 都是 3.3 起）。想回看已完成的，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。列表预览取每个 pane 的最后一条有效输出，主 pane 底部的 `🛡 bash-guard` 状态栏会被自动剔除，不占用预览。另注意 `/attach` 只列**本对话**（当前 pi 会话 id）启动的子 agent：`/new`、`/fork` 会产生新的对话 id，旧对话启动且仍在运行的子 agent 不会出现在新对话的列表里（`/resume` 回到同一会话，仍会显示）。

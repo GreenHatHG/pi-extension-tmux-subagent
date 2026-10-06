@@ -81,6 +81,11 @@ export function captureSubagentPane(session: string): Promise<{ code: number; st
 	return runTmux(["capture-pane", "-p", "-t", session]);
 }
 
+/** Kill just one sub-agent session (used by the main-session reaper). */
+export function killSubagentSession(session: string): Promise<{ code: number; stdout: string; stderr: string }> {
+	return runTmux(["kill-session", "-t", session]);
+}
+
 /** tmux key name (C-b / M-a / F12 / C-M-x) -> human text (Ctrl-b / Alt-a / F12 / Ctrl-Alt-x). */
 export function formatPrefixKey(raw: string): string {
 	let s = raw.trim();
