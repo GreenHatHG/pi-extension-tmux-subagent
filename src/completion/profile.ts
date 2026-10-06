@@ -22,7 +22,7 @@ export function isWatchdogAvailable(pi: ExtensionAPI): boolean {
  * the launchSub body just reads fields instead of spreading ternaries around.
  *
  * Watchdog path (default): interactive pi with mode=keep, always monitoring. When the AI calls
- * stop_watchdog, the ON_STOP hook (runs locally in the extension, no LLM, so no API failure risk)
+ * watchdog_decide, the ON_STOP hook (runs locally in the extension, no LLM, so no API failure risk)
  * does this in order: writes 0 to the exit file (pi is still running, so write 0 first and the
  * waiter reads "done" the moment it gets the signal instead of mistaking a missing exit for a
  * crash) -> sends the done signal -> closes the tmux session. pi gets SIGHUP and exits gracefully;
@@ -36,7 +36,7 @@ export function isWatchdogAvailable(pi: ExtensionAPI): boolean {
  * signal still fires, and a missing exit file means the waiter sees an abnormal exit.
  */
 export interface CompletionProfile {
-	/** "watchdog" = interactive pi + stop_watchdog wrap-up; "batch" = pi -p batch fallback. */
+	/** "watchdog" = interactive pi + watchdog_decide wrap-up; "batch" = pi -p batch fallback. */
 	kind: "watchdog" | "batch";
 	/** pi command prefix (no flags, no task prompt). */
 	piCommandPrefix: "pi" | "pi -p";

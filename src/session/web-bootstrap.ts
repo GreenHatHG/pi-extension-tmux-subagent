@@ -7,7 +7,7 @@
  *    discipline section is not here: it is preset on the main-session side by
  *    --append-system-prompt.
  * 2. Narrow the tool set by source (see shouldKeep): keep builtin read/bash/edit/write,
- *    stop_watchdog and pi-web-access tools, drop everything else. Narrow at session_start, then
+ *    watchdog_decide and pi-web-access tools, drop everything else. Narrow at session_start, then
  *    assert once more in before_agent_start, so tools lazily registered after session_start can't
  *    be auto-included back into active.
  * 3. Dynamically activate pi-web-access; skip when it is already installed globally (tools are
@@ -135,14 +135,14 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 	 * - pi-web-access dir or dynamically registered names: keep all. On dynamic load tools register
 	 *   into this extension, so a path cannot tell them apart; the registerTool proxy records names
 	 *   into webAccessToolNames, names first, path as fallback
-	 * - exception stop_watchdog: registered by pi-watchdog, whose package path varies by install, so keep by name
+	 * - exception watchdog_decide: registered by pi-watchdog, whose package path varies by install, so keep by name
 	 */
 	const builtinTools = new Set(["read", "bash", "edit", "write"]);
 	const shouldKeep = (tool: { name: string; sourceInfo?: { source?: string; path?: string } }): boolean => {
 		const { source, path = "" } = tool.sourceInfo ?? {};
 		if (source === "builtin") return builtinTools.has(tool.name);
 		return (
-			tool.name === "stop_watchdog" ||
+			tool.name === "watchdog_decide" ||
 			webAccessToolNames.has(tool.name) ||
 			(webAccessDir !== undefined && path.startsWith(`${webAccessDir}/`))
 		);
@@ -163,7 +163,7 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 		"session_start",
 		{
 			where: "session/web-bootstrap.ts:tool narrowing",
-			note: "web-research sub-agent: narrow the tool set by source at session_start (builtin keeps only read/bash/edit/write + stop_watchdog + pi-web-access)",
+			note: "web-research sub-agent: narrow the tool set by source at session_start (builtin keeps only read/bash/edit/write + watchdog_decide + pi-web-access)",
 		},
 		() => {
 			try {

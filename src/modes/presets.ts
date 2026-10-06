@@ -9,7 +9,7 @@ import { shQuote } from "../core/tmux";
  * bash handles forensics (pi-vcc CLI and read-only checks of specific artifacts); the line between
  * allowed and not is in ADVISOR_SYSTEM_PROMPT.
  */
-export const ADVISOR_TOOLS = ["read", "write", "stop_watchdog", "bash"];
+export const ADVISOR_TOOLS = ["read", "write", "watchdog_decide", "bash"];
 
 /**
  * Advisor-mode sub-agent system prompt (pi --system-prompt replaces the default). The delivery
@@ -36,11 +36,11 @@ Rules:
 
 /**
  * Advisor preset flags: narrow the tool set + replace the system prompt. On the -p fallback
- * stop_watchdog does not exist (PI_WATCHDOG not injected), so filter it out; --tools ignores
+ * watchdog_decide does not exist (PI_WATCHDOG not injected), so filter it out; --tools ignores
  * unknown tool names, so filtering is just cleaner.
  */
 export function advisorPresetFlags(useWatchdog: boolean): string[] {
-	const tools = useWatchdog ? ADVISOR_TOOLS : ADVISOR_TOOLS.filter((t) => t !== "stop_watchdog");
+	const tools = useWatchdog ? ADVISOR_TOOLS : ADVISOR_TOOLS.filter((t) => t !== "watchdog_decide");
 	return ["--tools", shQuote(tools.join(",")), "--system-prompt", shQuote(ADVISOR_SYSTEM_PROMPT)];
 }
 
