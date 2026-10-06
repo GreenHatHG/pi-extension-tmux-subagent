@@ -124,10 +124,10 @@ tmux -L pi-sub kill-server`;
 }
 
 /** Assemble the success result: the cheatsheet goes only to the user (details are rendered by renderResult, not into the LLM context); the wait instructions go into the LLM context. */
-function startedResult(paths: SubagentPaths, completion: CompletionProfile, brief: string): LaunchResult {
+function startedResult(paths: SubagentPaths, completion: CompletionProfile, brief: string, note = ""): LaunchResult {
 	return {
 		ok: true,
-		text: `Sub-agent started (deliverable: ${paths.artifactPath}). ${buildMainAgentNote(paths, completion.exitNote)}`,
+		text: `Sub-agent started (deliverable: ${paths.artifactPath}).${note} ${buildMainAgentNote(paths, completion.exitNote)}`,
 		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done),
 		session: paths.session,
 		artifactPath: paths.artifactPath,
@@ -212,9 +212,30 @@ export async function launchSub(
 		return { ok: false, text: `tmux launch failed: ${launch.stderr || launch.stdout}` };
 	}
 
-	// Also write a tmux session option: list-sessions can then bring back the owner in one shot,
-	// no per-session show-environment; the startup env vars still serve the sub-agent process.
-	await runTmux(["set-option", "-t", paths.session, "@pi-sub-parent-session", parentSessionId]);
+	// Also write tmux session options: list-sessions can then bring back the owner and the mode in
+	// one shot (the agent list shows which tool started it), no per-session show-environment; the
+	// startup env vars still serve the sub-agent process. One tmux call with ";" separators: the
+	// chain must start with a complete command (a bare "set-option -t <session> ;" is an error).
+	// A failure is not fatal (the sub-agent runs either way), but the owner label is what /attach and
+	// the agent list filter on, so tell the model how to watch it by hand (capture-pane works for the
+	// model; the attach command in the ops cheatsheet is the operator's view).
+	const opt = await runTmux([
+		"set-option",
+		"-t",
+		paths.session,
+		"@pi-sub-parent-session",
+		parentSessionId,
+		";",
+		"set-option",
+		"-t",
+		paths.session,
+		"@pi-sub-mode",
+		mode.name,
+	]);
+	const labelNote =
+		opt.code === 0
+			? ""
+			: ` WARNING: the tmux session labels could not be written (${(opt.stderr || opt.stdout).trim()}), so /attach and the agent list will not show this run; check it with tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30 instead.`;
 
 	// Watch popup look: give the sub-session a status bar that differs from the main tmux. Pure
 	// decoration; a failure just means no color.
@@ -243,5 +264,5 @@ export async function launchSub(
 		};
 	}
 
-	return startedResult(paths, completion, brief);
+	return startedResult(paths, completion, brief, labelNote);
 }
