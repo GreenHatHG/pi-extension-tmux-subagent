@@ -1,4 +1,5 @@
 /** Brief templates for the three modes: each template is the sub-agent's only source of context. */
+import { WATCHDOG_TOOL } from "../completion/profile";
 import { SOCKET } from "../core/tmux";
 import type { VccSummary } from "./vcc";
 
@@ -18,7 +19,8 @@ function buildCompletionSection(useWatchdog: boolean): string {
 	if (!useWatchdog) return "";
 	return `
 ## Wrap up
-- When everything is done (deliverable written, nothing else to output), call watchdog_decide as your last action
+- When everything is done (deliverable written, nothing else to output), call ${WATCHDOG_TOOL} with decision "done" as your last action
+- If a watchdog check reaches you before you are done, answer it with ${WATCHDOG_TOOL} decision "continue" so the next turn carries on with the task; text is not an answer there
 `;
 }
 
@@ -104,9 +106,9 @@ export function buildAdvisorBrief(
 	useWatchdog: boolean,
 	opts?: BriefOpts,
 ): string {
-	const tools = useWatchdog ? "read/write/watchdog_decide/bash" : "read/write/bash";
+	const tools = useWatchdog ? `read/write/${WATCHDOG_TOOL}/bash` : "read/write/bash";
 	const finish = useWatchdog
-		? ", then call watchdog_decide to finish"
+		? `, then call ${WATCHDOG_TOOL} with decision "done" to finish`
 		: " (batch mode: ends as soon as it is written, no other wrap-up action)";
 	const forensics = buildAdvisorForensics(opts);
 	return `# Consultation brief

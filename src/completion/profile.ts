@@ -5,6 +5,13 @@ import type { SubagentPaths } from "../core/paths";
 import { runTmux, SOCKET, shQuote } from "../core/tmux";
 
 /**
+ * The wrap-up tool name, owned by pi-watchdog (its src/constants.ts TOOL_NAME). Copied, not imported:
+ * the two extensions install and version separately, so an import would break whenever the other
+ * side is missing or older. A rename upstream has to be mirrored here.
+ */
+export const WATCHDOG_TOOL = "watchdog_decide";
+
+/**
  * Whether the watchdog wrap-up path is available: pi-watchdog always registers the /watchdog
  * command, so its presence means the extension loaded (loaded = usable; whether the sub-agent is
  * monitored is decided by the PI_WATCHDOG this extension injects). The main session and sub-agent

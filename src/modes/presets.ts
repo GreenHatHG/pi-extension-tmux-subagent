@@ -2,6 +2,7 @@
  * Preset flags (CLI args) for the three sub-agent modes live here. For arg order and pi's
  * single-value last-wins rule, see launch/launch.ts.
  */
+import { WATCHDOG_TOOL } from "../completion/profile";
 import { shQuote } from "../core/tmux";
 
 /**
@@ -9,7 +10,7 @@ import { shQuote } from "../core/tmux";
  * bash handles forensics (pi-vcc CLI and read-only checks of specific artifacts); the line between
  * allowed and not is in ADVISOR_SYSTEM_PROMPT.
  */
-export const ADVISOR_TOOLS = ["read", "write", "watchdog_decide", "bash"];
+export const ADVISOR_TOOLS = ["read", "write", WATCHDOG_TOOL, "bash"];
 
 /**
  * Advisor-mode sub-agent system prompt (pi --system-prompt replaces the default). The delivery
@@ -40,7 +41,7 @@ Rules:
  * unknown tool names, so filtering is just cleaner.
  */
 export function advisorPresetFlags(useWatchdog: boolean): string[] {
-	const tools = useWatchdog ? ADVISOR_TOOLS : ADVISOR_TOOLS.filter((t) => t !== "watchdog_decide");
+	const tools = useWatchdog ? ADVISOR_TOOLS : ADVISOR_TOOLS.filter((t) => t !== WATCHDOG_TOOL);
 	return ["--tools", shQuote(tools.join(",")), "--system-prompt", shQuote(ADVISOR_SYSTEM_PROMPT)];
 }
 
