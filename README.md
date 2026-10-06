@@ -49,14 +49,14 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
    ```
 
    - **watchdog 路径**：子 agent 用交互式 pi 启动（任务做完不会自己退出进程），额外注入
-     ON_STOP 钩子：子 agent 调用 `stop_watchdog` 停止监控时，由扩展本地依次：把退出码 0
+     ON_STOP 钩子：子 agent 调用 `watchdog_decide` 收尾时，由扩展本地依次：把退出码 0
      写进 exit 文件（pi 此刻仍在运行，先写 0 让等待方在信号时刻读到「正常完成」，不会把
      exit 缺失误判为崩溃）→ 用 wait-for 发完成信号 → 关闭 tmux 会话（pi 收到 SIGHUP
      走优雅退出，pane shell 一并死掉，抢不到机会用真实退出码覆盖预写的 0）。这样不需要
      子 agent 再跑一轮 bash 命令（之前试过，遇到 API 429 故障时等待方会永久挂起，踩过坑）。
    - **-p 回退路径**：`pi -p` 跑完这一个回合进程就退出（pane 命令链结束、会话随之自动
      关闭），真实退出码由 pane shell 写入 exit 文件；不需要 ON_STOP 钩子，也不注入
-     watchdog 环境变量。advisor 模式下 `stop_watchdog` 会从 `--tools` 里滤掉，
+     watchdog 环境变量。advisor 模式下 `watchdog_decide` 会从 `--tools` 里滤掉，
      brief/system prompt 相应收尾文案换成「写完即结束」。pi 会话默认保存，可回看。
 
 2. 两条路都再注册一个 pane-died 钩子兜底：子 agent 进程异常退出（崩溃/被杀）时也发完成
@@ -67,7 +67,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 4. 主会话自己退出（`quit`，含 SIGTERM / 关终端发来的 SIGHUP）或被替换（`/new`、`/resume`、
    `/fork`）时，把**本会话启动的所有子 agent pane 一起关掉**（`src/session/reap.ts`，按
    `@pi-sub-parent-session` 过滤）。不这么做的后果：子 agent 的收尾只靠它自己跑到
-   `stop_watchdog`，主会话先死就没人管——那个 pane 会一直活着继续跑命令，而它的 owner
+   `watchdog_decide`，主会话先死就没人管——那个 pane 会一直活着继续跑命令，而它的 owner
    会话已经不存在，`/attach`（只列当前会话）永远看不到它。扩展重载（`reload`）**不关**：
    那时主进程还活着，用户可能正开着 `/attach` 看。
 
@@ -76,7 +76,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 ### 注意事项
 
-- **查看子 agent 的执行过程**：两条路径下任务完成后会话都会自动关闭（watchdog 路径由 stop_watchdog 触发，-p 路径随进程退出）。运行期间可以**实时围观**：主会话里输入 `/attach` 会弹出当前对话启动的子 agent 列表（选一个即开浮层；不会混入其他对话的子 agent），或 `/attach <会话名>`（Tab 补全会话名）直接开——在你的 tmux 上弹一个 display-popup 浮层，attach 到那个子 agent 的 pane：真实画面、实时推进。浮层做了整套视觉区分，不会和主 tmux 混淆：外层是 `-b double` 边框 + 粉色标题，内层子会话的 status 栏被染成紫色并常驻「浮层内 `<前缀>` d 退出」提示。**退出只用前缀键 `d`**（默认 `Ctrl-b d`；前缀可在 tmux.conf 自定义，浮层提示会显示你实际的前缀）——只 detach 这个 attach，子 agent 不受影响。**`Ctrl-c` / `Esc` 不是退出**：它们会被原样送进子 agent（可能打断它），别按。浮层里前缀进内层，滚轮 / 前缀 + `[` 可回看历史。注意这是普通 attach：前缀 + `x`/`&`/`:` 会真的杀掉会话、键盘也会打进 pane（要防误杀可把命令里的 `attach` 换成 `attach -r`，代价是只读模式下不能滚动）。子 agent 结束时浮层自动关闭（需 tmux ≥ 3.3：`-b`/`-S`/`-T` 都是 3.3 起）。想回看已完成的，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。列表预览取每个 pane 的最后一条有效输出，主 pane 底部的 `🛡 bash-guard` 状态栏会被自动剔除，不占用预览。另注意 `/attach` 只列**本对话**（当前 pi 会话 id）启动的子 agent：`/new`、`/fork` 会产生新的对话 id，旧对话启动且仍在运行的子 agent 不会出现在新对话的列表里（`/resume` 回到同一会话，仍会显示）。
+- **查看子 agent 的执行过程**：两条路径下任务完成后会话都会自动关闭（watchdog 路径由 watchdog_decide 触发，-p 路径随进程退出）。运行期间可以**实时围观**：主会话里输入 `/attach` 会弹出当前对话启动的子 agent 列表（选一个即开浮层；不会混入其他对话的子 agent），或 `/attach <会话名>`（Tab 补全会话名）直接开——在你的 tmux 上弹一个 display-popup 浮层，attach 到那个子 agent 的 pane：真实画面、实时推进。浮层做了整套视觉区分，不会和主 tmux 混淆：外层是 `-b double` 边框 + 粉色标题，内层子会话的 status 栏被染成紫色并常驻「浮层内 `<前缀>` d 退出」提示。**退出只用前缀键 `d`**（默认 `Ctrl-b d`；前缀可在 tmux.conf 自定义，浮层提示会显示你实际的前缀）——只 detach 这个 attach，子 agent 不受影响。**`Ctrl-c` / `Esc` 不是退出**：它们会被原样送进子 agent（可能打断它），别按。浮层里前缀进内层，滚轮 / 前缀 + `[` 可回看历史。注意这是普通 attach：前缀 + `x`/`&`/`:` 会真的杀掉会话、键盘也会打进 pane（要防误杀可把命令里的 `attach` 换成 `attach -r`，代价是只读模式下不能滚动）。子 agent 结束时浮层自动关闭（需 tmux ≥ 3.3：`-b`/`-S`/`-T` 都是 3.3 起）。想回看已完成的，读 pi 的会话历史 jsonl（`~/.pi/agent/sessions/<按工作目录分目录>/`）。列表预览取每个 pane 的最后一条有效输出，主 pane 底部的 `🛡 bash-guard` 状态栏会被自动剔除，不占用预览。另注意 `/attach` 只列**本对话**（当前 pi 会话 id）启动的子 agent：`/new`、`/fork` 会产生新的对话 id，旧对话启动且仍在运行的子 agent 不会出现在新对话的列表里（`/resume` 回到同一会话，仍会显示）。
 - **简报与回复直接打进 TUI**：三个工具（spawn_sub / advisor / web_research）启动后，子 agent 简报会以可折叠的纯显示条目出现在主会话里（默认一行摘要，点击或 `ctrl+o` 展开 Markdown，再次点击收起）；子 agent 完成后回复同样自动追加一条（内容取 result.md；异常终止时展示 stderr log 尾部）。这些条目只供阅读，不进 LLM 上下文，也不改变主会话模型自己的 `wait-for` + `read result.md` 等待/读取协议。
 - **沙盒环境下的嵌套**：如果主会话的 pi 是在沙盒（如 SRT 限制）里启动的，子 agent 继承同样的环境，也会受沙盒限制（例如无法写 `~`、无法访问网络等）。
 
@@ -86,7 +86,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 ## advisor（可选功能）
 
-`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,stop_watchdog,bash`（bash 承担取证：配 `vccCli` 时有 L1 recall CLI；L3 只读核实特定工件恒可用，见下）。
+`advisor` 是一个「问更强模型要判断」的工具：主模型在实质开工前、卡住时、准备宣告完成前，带上一个自包含的 context 调用 advisor，拿回一份计划 / 纠偏 / 停止信号（同时写到 `/tmp/pi-sub-<name>/result.md`）。它复用 spawn_sub 的全部基础设施（tmux、watchdog、wait-for、exit 协议），只是给子 agent 换了简报模板、系统提示词，并把工具限制为 `read,write,watchdog_decide,bash`（bash 承担取证：配 `vccCli` 时有 L1 recall CLI；L3 只读核实特定工件恒可用，见下）。
 
 **bash 默认被收成只读**：起 advisor 时会注入 `PI_BASH_GUARD_MODE=advisor`（见 `src/modes/types.ts`），装了 `pi-extension-bash-guard` 的机器上，它的 bash 会在执行前过一道只读白名单（`pi-extension-bash-guard` 的 `src/read-only.ts`）——放行只读文本工具、只读的 `git`/`tmux` 子命令和 recall CLI 用的 `bun <script>`/`pi-vcc`，拦下包管理器（`pnpm test` 这类）、解释器、网络、写文件、`cat`/`tee` 和一切 `>` 重定向；引号没闭合时按危险处理（fail closed）。被拦的命令会带 `[BASH READ-ONLY FENCE]` 前缀返回，不会错认成真实报错；状态栏在围栏里显示 `🛡 read-only`。没装 bash-guard 时这个变量没人读，等于无事发生；同一套 env 耦合也可以给别的模式复用（不认识的 mode 值会让 bash 全被拦，方向是安全的）。
 
@@ -188,7 +188,7 @@ timeout 的取值逻辑要兼顾两边：
 另外，timeout 命中后**直接重发 wait-for 即可**：tmux 会记住已发出的信号（无等待者时
 `-S` 发出的信号不会丢失，稍后的 `wait-for` 立即返回，已实测验证），不会因错过窗口期而永久阻塞。
 
-但等待必须有界：信号可能根本不会来——比如子 agent LLM 没调 `stop_watchdog`、watchdog 催促
+但等待必须有界：信号可能根本不会来——比如子 agent LLM 没调 `watchdog_decide`、watchdog 催促
 次数（`max=50`）耗尽后自动停止监控、或 watchdog 未接管。连续 2–3 次 timeout 且会话仍在时，
 先看现场再决定：
 

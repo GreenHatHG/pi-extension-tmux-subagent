@@ -18,11 +18,11 @@ function buildCompletionSection(useWatchdog: boolean): string {
 	if (!useWatchdog) return "";
 	return `
 ## Wrap up
-- When everything is done (deliverable written, nothing else to output), call stop_watchdog as your last action
+- When everything is done (deliverable written, nothing else to output), call watchdog_decide as your last action
 `;
 }
 
-/** useWatchdog = wrap up via stop_watchdog (false = pi -p, which exits on its own, no wrap-up action). */
+/** useWatchdog = wrap up via watchdog_decide (false = pi -p, which exits on its own, no wrap-up action). */
 export function buildTaskBrief(
 	question: string,
 	context: string | undefined,
@@ -104,9 +104,9 @@ export function buildAdvisorBrief(
 	useWatchdog: boolean,
 	opts?: BriefOpts,
 ): string {
-	const tools = useWatchdog ? "read/write/stop_watchdog/bash" : "read/write/bash";
+	const tools = useWatchdog ? "read/write/watchdog_decide/bash" : "read/write/bash";
 	const finish = useWatchdog
-		? ", then call stop_watchdog to finish"
+		? ", then call watchdog_decide to finish"
 		: " (batch mode: ends as soon as it is written, no other wrap-up action)";
 	const forensics = buildAdvisorForensics(opts);
 	return `# Consultation brief

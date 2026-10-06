@@ -3,7 +3,7 @@
  *
  * Why this is needed: a sub-agent pane lives on the shared pi-sub tmux server, so it is not a
  * child of this pi process and nothing kills it when we die. Its own wrap-up only runs when the
- * task reaches stop_watchdog; if we go away first, the pane keeps running for good. An orphan
+ * task reaches watchdog_decide; if we go away first, the pane keeps running for good. An orphan
  * pane still has the full tool set, so it can keep running shell commands and popping dialogs on
  * the user's screen — that is the bug this file closes.
  *
