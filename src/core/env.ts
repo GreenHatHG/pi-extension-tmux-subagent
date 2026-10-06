@@ -21,6 +21,12 @@ export const ENV_WATCHDOG = "PI_WATCHDOG";
 export const ENV_SUB_WEB = "PI_SUB_WEB";
 
 /**
+ * Fences the advisor's bash to read-only forensics. Owned by the bash-guard extension (it reads this
+ * var itself), injected here so the two extensions never have to know about each other's config.
+ */
+export const ENV_BASH_GUARD_MODE = "PI_BASH_GUARD_MODE";
+
+/**
  * Process role, parsed once at factory time. tmux -e sets the env vars at startup and they
  * never change, so reading them once is the same as reading them live.
  */
