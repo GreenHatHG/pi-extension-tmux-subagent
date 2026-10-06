@@ -6,7 +6,7 @@
  * Four axes of mode difference: brief (brief template), presetFlags (sub-agent pi CLI flags),
  * extraEnvArgs (extra tmux -e injection), display (TUI label).
  */
-import { ENV_SUB_WEB } from "../core/env";
+import { ENV_BASH_GUARD_MODE, ENV_SUB_WEB } from "../core/env";
 import { type BriefOpts, buildAdvisorBrief, buildTaskBrief, buildWebResearchBrief } from "./briefs";
 import { advisorPresetFlags, webResearchPresetFlags } from "./presets";
 
@@ -51,7 +51,9 @@ export const advisorMode: SubagentMode = {
 	name: "advisor",
 	brief: buildAdvisorBrief,
 	presetFlags: advisorPresetFlags,
-	extraEnvArgs: () => [],
+	// bash-guard turns this into a read-only command fence: the advisor judges, it does not work.
+	// Harmless when the extension is absent, since nothing else reads the var.
+	extraEnvArgs: () => ["-e", `${ENV_BASH_GUARD_MODE}=advisor`],
 	display: { briefLabel: "Advisor brief", replyLabel: "Advisor reply" },
 };
 
