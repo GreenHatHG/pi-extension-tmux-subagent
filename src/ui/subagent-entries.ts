@@ -56,7 +56,7 @@ function buildSubagentEntryContent(
 		const lines = body ? body.split("\n") : [];
 		const note = d.note ? ` · ${d.note}` : "";
 		return new Text(
-			theme.fg("muted", `▸ ${d.label ?? fallback} (${lines.length} lines${note}, click or ctrl+o to expand)`),
+			theme.fg("muted", `▸ ${d.label ?? fallback} (${lines.length} lines${note}, click to expand)`),
 			1,
 			0,
 		);

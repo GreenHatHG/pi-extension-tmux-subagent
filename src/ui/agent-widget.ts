@@ -14,10 +14,9 @@
  * Cost: while a marker exists the poll runs once a second, and with no live agent that is a single
  * cheap `tmux list-sessions`. The list itself is hidden until the first agent shows up.
  *
- * Collapsed it is one line per agent (status dot, name, latest activity). Clicking the title row or
- * ctrl+o (app.tools.expand) opens the expanded view with a few screen lines per agent; a click on
- * any agent row opens the same popup attach as /attach. /attach keeps working on its own, so mouse
- * input is a shortcut, never a requirement.
+ * Collapsed it is one line per agent (mode emoji, name, latest activity). Clicking the title row
+ * or an agent row expands the list; with the list already expanded, a click on an agent row opens
+ * the same popup attach as /attach for the full-screen detail.
  *
  * Display only: it never throws into the main session and never touches the wait-for / exit
  * protocol.
@@ -56,6 +55,8 @@ interface AgentRow {
 	tail: string[];
 	/** Set once the session is gone; dropped again after LINGER_MS. */
 	end?: { ok: boolean; note: string; at: number };
+	/** When we first saw this agent, so the widget can show a total run time. */
+	start: number;
 }
 
 // ---------- widget state ----------
@@ -68,14 +69,10 @@ let wantWidget = false;
 let ticking = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 /**
- * ctrl+o (pi hands it to the entry renderer as setExpanded) and a click are two owners of the same
- * view. A click only overrides until pi next reports a changed expanded state, which means the user
- * pressed ctrl+o: the key takes the view back.
+ * ctrl+o never worked reliably here, so the expanded view has one owner only: clicks. Title row
+ * toggles the whole list, an agent row expands the list (or attaches once already expanded).
  */
-let overrideExpanded: boolean | undefined;
-/** Latest expanded state pi reported for the marker entry, and the value before it. */
-let entryExpanded = false;
-let prevEntryExpanded = false;
+let expanded = false;
 /** Line ranges of the last render, so a click can be mapped back to an agent. */
 let hitRows: Array<{ session: string; start: number; end: number }> = [];
 let lastSig = "";
@@ -160,11 +157,13 @@ async function tick(): Promise<void> {
 		const modes = live.length > 0 ? await sessionModes() : new Map<string, string>();
 		const captured = await captureAll(live);
 		for (const [session, content] of captured) {
+			// keep the first-seen time so the timer shows the whole run, not the current tick
 			rows.set(session, {
 				session,
 				mode: modes.get(session) ?? "task",
 				activity: content[content.length - 1] ?? "",
 				tail: content.slice(-TAIL_LINES),
+				start: rows.get(session)?.start ?? Date.now(),
 			});
 		}
 		const now = Date.now();
@@ -220,18 +219,39 @@ function refresh(): void {
 // ---------- rendering ----------
 
 function isExpanded(): boolean {
-	return overrideExpanded ?? entryExpanded;
+	return expanded;
 }
 
-/** The status dot and the one line of text that describes an agent right now. */
+/** Mode emoji: one glance tells task from advisor from web-research. */
+const MODE_EMOJI: Record<string, string> = {
+	task: "🛠️",
+	advisor: "🧭",
+	"web-research": "🌐",
+};
+
+/** 61s -> "1m01s", 3h -> "3h00m": short enough for a list line. */
+function fmtDuration(ms: number): string {
+	const s = Math.floor(ms / 1000);
+	if (s < 60) return `${s}s`;
+	const m = Math.floor(s / 60);
+	if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+	return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+/**
+ * The mode emoji and the one line of text that describes an agent right now. Right side output uses
+ * the muted (thinking) color so it stays in the background. Done rows keep the final run time.
+ */
 function statusOf(row: AgentRow, theme: ExtensionContext["ui"]["theme"]): { dot: string; text: string } {
+	const emoji = MODE_EMOJI[row.mode] ?? "🛠️";
 	if (row.end) {
 		return {
-			dot: theme.fg(row.end.ok ? "success" : "error", row.end.ok ? "✓" : "✗"),
-			text: theme.fg("muted", row.end.note),
+			dot: emoji,
+			text: theme.fg("muted", `${row.end.note} · ran ${fmtDuration(row.end.at - row.start)}`),
 		};
 	}
-	return { dot: theme.fg("accent", "◐"), text: theme.fg("text", row.activity || "starting…") };
+	const dur = theme.fg("dim", ` · ${fmtDuration(Date.now() - row.start)}`);
+	return { dot: emoji, text: theme.fg("muted", (row.activity || "starting…") + dur) };
 }
 
 /** Mouse clicks only reach a component in fullscreen mode (regular mode leaves the mouse to the terminal). */
@@ -251,10 +271,16 @@ function renderList(width: number): string[] {
 		.filter(Boolean)
 		.join(" · ");
 
-	const click = mouseAvailable() ? " or click" : "";
-	const hint = expanded ? `  ctrl+o${click} to collapse` : `  ctrl+o${click} to expand`;
+	const click = mouseAvailable() ? " · click" : "";
+	// hint the full click flow: one click expands, a second click on a row opens the attach popup
+	const hint = expanded
+		? `click agent to open · title to collapse${click}`
+		: `click to expand · again for detail${click}`;
 	const out: string[] = [
-		truncateToWidth(theme.fg("accent", `${expanded ? "▾" : "▸"} agents · ${counts}`) + theme.fg("dim", hint), width),
+		truncateToWidth(
+			theme.fg("accent", `${expanded ? "▾" : "▸"} agents · ${counts}`) + theme.fg("dim", `  ${hint}`),
+			width,
+		),
 	];
 	hitRows = [];
 
@@ -266,7 +292,7 @@ function renderList(width: number): string[] {
 		// the activity text stays readable (the expanded view shows it in full)
 		const label = row.mode === "task" ? row.session : `${row.session} ${theme.fg("dim", row.mode)}`;
 		const name = expanded ? label : truncateToWidth(label, 30, "…");
-		out.push(truncateToWidth(`  ${dot} ${theme.fg("text", name)} ${theme.fg("dim", "│")} ${text}`, width));
+		out.push(truncateToWidth(`  ${dot} ${theme.fg("muted", name)} ${theme.fg("dim", "│")} ${text}`, width));
 		if (expanded) {
 			const tail = row.tail.length > 0 ? row.tail : ["(no output yet)"];
 			for (const line of tail) {
@@ -285,8 +311,9 @@ function renderList(width: number): string[] {
 	return out;
 }
 
-/** Attach to an agent from a click. Fire and forget: the popup blocks until the user leaves it. */
-function attachFromList(session: string): void {
+/** Attach to an agent from a click. Fire and forget: the popup blocks until the user leaves it. */ function attachFromList(
+	session: string,
+): void {
 	const ctx = ctxRef;
 	if (!ctx) return;
 	if (!overlayAvailable(ctx.mode)) {
@@ -303,16 +330,23 @@ function attachFromList(session: string): void {
 		});
 }
 
-/** Title row toggles collapsed/expanded; a row click attaches, so watching is one click even when collapsed. */
+/**
+ * Title row toggles collapsed/expanded; an agent row click expands the list first, and a second
+ * click (list already expanded) opens the attach popup for details.
+ */
 function onWidgetMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 	if (event.type !== "click" || event.button !== "left") return undefined;
 	if (event.clickCount !== undefined && event.clickCount > 1) return { handled: true }; // let pi do word selection
 	if (event.y === 0) {
-		overrideExpanded = !isExpanded();
+		expanded = !expanded;
 		return { handled: true };
 	}
 	const row = hitRows.find((r) => event.y >= r.start && event.y <= r.end);
 	if (!row) return undefined;
+	if (!expanded) {
+		expanded = true;
+		return { handled: true };
+	}
 	attachFromList(row.session);
 	return { handled: true };
 }
@@ -324,12 +358,7 @@ function onWidgetMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
  * that entry is seen (wantWidget), polling stays off, so sessions without the marker cost nothing.
  */
 export function registerAgentWidgetEntry(pi: ExtensionAPI): void {
-	pi.registerEntryRenderer(AGENT_WIDGET_ENTRY, (_entry, options) => {
-		// pi renders the entry before it renders the widget, so the state seen here is what the widget
-		// render uses right after. A change means ctrl+o was pressed, so it wins over an earlier click.
-		prevEntryExpanded = entryExpanded;
-		entryExpanded = options.expanded;
-		if (entryExpanded !== prevEntryExpanded) overrideExpanded = undefined;
+	pi.registerEntryRenderer(AGENT_WIDGET_ENTRY, (_entry, _options) => {
 		wantWidget = true;
 		ensurePolling();
 		return { render: () => [], invalidate: () => {} };
@@ -353,9 +382,7 @@ export function setupAgentWidget(pi: ExtensionAPI): void {
 		(_event: unknown, ctx: ExtensionContext) => {
 			if (ctx.mode !== "tui") return; // print / json / rpc have no widget
 			ctxRef = ctx;
-			overrideExpanded = undefined;
-			entryExpanded = false;
-			prevEntryExpanded = false;
+			expanded = false;
 			// A restored session already carries the marker entry; a fresh one gets it right here (the
 			// entry renderer that pi runs for it flips wantWidget on).
 			if (hasWidgetMarker(ctx)) wantWidget = true;
