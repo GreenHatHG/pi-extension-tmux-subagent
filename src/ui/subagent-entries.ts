@@ -162,7 +162,7 @@ function failureLog(logPath: string): string {
  * - the user quits the session: the watcher's JS logic stops with it (does not block process exit),
  *   and the tmux client process becomes an orphan, waking on the signal and exiting on normal finish.
  */
-const WATCH_ROUND_TIMEOUT = 600_000;
+const WATCH_ROUND_TIMEOUT = 600_000; // display-only fallback: shorter than the LLM-facing suggestion on purpose, so a lost signal is reported sooner
 const WATCH_TOTAL_LIMIT = 6 * 3600_000;
 async function watchSubagentResult(
 	pi: ExtensionAPI,
