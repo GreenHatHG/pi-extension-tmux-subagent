@@ -47,6 +47,19 @@ function prepareRunDir(paths: SubagentPaths, brief: string): void {
 }
 
 /**
+ * Suggested bounded-wait length, in seconds, for the main-session LLM.
+ *
+ * A blocking wait costs zero tokens, so the only thing the timeout buys is recovery from a signal
+ * that never comes — and every timeout hit costs a full tool-call round-trip (command text + result
+ * note back into context, plus one API request). Set it above the realistic tail so normal runs
+ * never pay that. Measured over 109 completed runs (result.md mtime - brief.md mtime): median 243s,
+ * p90 688s, max 3186s; 37% exceed 300s and 15% exceed 600s, so 600s was cutting off a sixth of all
+ * runs. 1800s covers ~97% of them while still bounding a hang. pi's bash tool caps at ~2147483s, so
+ * this stays well inside the limit.
+ */
+const SUGGESTED_WAIT_TIMEOUT_SECONDS = 1800;
+
+/**
  * Wait/read instructions for the main-session LLM. The wait command has a timeout so it can't hang
  * forever; on timeout just resend it (tmux remembers the signal, see wait-for semantics); if it
  * times out 2-3 times in a row and the session is still there, capture-pane to see what's going on
@@ -59,7 +72,7 @@ function prepareRunDir(paths: SubagentPaths, brief: string): void {
  * a timed-out one.
  */
 function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
-	return `To get the result, run in bash: tmux -L ${SOCKET} wait-for ${paths.done}. Waiting must be bounded: use the bash tool's own timeout argument (600s is a good pick; it is a tool-call argument, do not add a shell timeout prefix inside the command). Blocking waits cost zero tokens. On timeout just resend this command to keep waiting (tmux remembers sent signals, so it won't block forever). If it times out 2-3 times in a row and \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` still shows the session: run \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` to see what's up — the sub-agent may have skipped a ${WATCHDOG_TOOL} call or be stuck, so keep waiting or kill-session and treat it as failed. After it returns, read ${paths.artifactPath}. If exit is non-zero or the reply is empty, read ${paths.logPath} for the sub-agent's stderr to find the root cause. ${exitNote}`;
+	return `To get the result, run in bash: tmux -L ${SOCKET} wait-for ${paths.done}. Waiting must be bounded: use the bash tool's own timeout argument (${SUGGESTED_WAIT_TIMEOUT_SECONDS}s is a good pick; it is a tool-call argument, do not add a shell timeout prefix inside the command). Blocking waits cost zero tokens. On timeout just resend this command to keep waiting (tmux remembers sent signals, so it won't block forever). If it times out 2-3 times in a row and \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` still shows the session: run \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` to see what's up — the sub-agent may have skipped a ${WATCHDOG_TOOL} call or be stuck, so keep waiting or kill-session and treat it as failed. After it returns, read ${paths.artifactPath}. If exit is non-zero or the reply is empty, read ${paths.logPath} for the sub-agent's stderr to find the root cause. ${exitNote}`;
 }
 
 export interface LaunchResult {
@@ -93,7 +106,7 @@ tmux -L pi-sub ls
 cat ${artifactPath}
 
 # Block until it finishes (the sub-agent sends a signal when done, or when the process exits, either way; the command returns right after)
-# Run it with the tool's timeout (e.g. 600s): tmux remembers sent signals, so on timeout
+# Run it with the tool's timeout (e.g. ${SUGGESTED_WAIT_TIMEOUT_SECONDS}s): tmux remembers sent signals, so on timeout
 # just resend this command (it won't block forever); if it times out several times and
 # tmux -L pi-sub has-session -t <session> still shows the session, use capture-pane above
 # to see what's up — the sub-agent may have skipped a ${WATCHDOG_TOOL} call or be stuck; keep waiting
