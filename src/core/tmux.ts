@@ -117,9 +117,9 @@ export async function subagentPrefixHint(): Promise<string> {
 }
 
 /**
- * Give watchers a look that differs from the user's own tmux: purple status bar + a "sub-agent
- * watch" label + an always-on exit hint (sub-sessions inherit the user tmux.conf, so by default
- * they look identical).
+ * Give watchers a look that differs from the user's own tmux: an amber status bar matching the
+ * popup's color identity + a "sub-agent" label + an always-on exit hint (sub-sessions inherit the
+ * user tmux.conf, so by default they look identical).
  * Only display options change: capture-pane cannot see the status line, so captureSubagentPane is
  * unaffected. Pure decoration, so a failed set-option just means no color; callers should ignore it.
  */
@@ -128,18 +128,20 @@ export async function styleSubagentSession(session: string): Promise<void> {
 	// status-* are session options, window-status-* are window options (-w), hence two groups
 	const sessionOpts: Array<[string, string]> = [
 		["status", "on"],
-		["status-style", "bg=colour53,fg=colour231"],
+		// Dark warm bar with an amber pill: same identity as the attach popup's amber frame + title
+		// pill, so the popup's top bar and the inner session's bottom bar read as one design
+		["status-style", "bg=colour235,fg=colour250"],
 		["status-left-length", "30"],
-		["status-left", " #[bg=colour53,fg=colour231,bold] sub-agent watch "],
+		["status-left", "#[bg=colour214,fg=colour0,bold] sub-agent "],
 		["status-right-length", "40"],
-		["status-right", ` #[bg=colour213,fg=colour16,bold] in popup ${hint} d to quit `],
-		["window-status-separator", "#[bg=colour53,fg=colour240]│"],
+		["status-right", `#[bg=colour235,fg=colour240] popup · #[bg=colour235,fg=colour214,bold] ${hint} d to quit `],
+		["window-status-separator", "#[bg=colour235,fg=colour240]│"],
 	];
 	const windowOpts: Array<[string, string]> = [
-		["window-status-style", "bg=colour53,fg=colour245"],
-		["window-status-current-style", "bg=colour213,fg=colour16,bold"],
-		["window-status-format", " #[fg=colour245]#W "],
-		["window-status-current-format", " #[fg=colour16,bold]#W "],
+		["window-status-style", "bg=colour235,fg=colour250"],
+		["window-status-current-style", "bg=colour235,fg=colour214,bold"],
+		["window-status-format", " #[fg=colour250]#W "],
+		["window-status-current-format", " #[fg=colour214,bold]#W "],
 	];
 	const args: string[] = [];
 	const push = (extra: string[], opt: string, value: string) => {
