@@ -77,6 +77,13 @@ let expanded = false;
 let hitRows: Array<{ session: string; start: number; end: number }> = [];
 let lastSig = "";
 
+/** Mode emoji: one glance tells task from advisor from web-research. */
+const MODE_EMOJI: Record<string, string> = {
+	task: "🛠️",
+	advisor: "🧭",
+	"web-research": "🌐",
+};
+
 // ---------- reading a pane ----------
 
 /**
@@ -218,17 +225,6 @@ function refresh(): void {
 
 // ---------- rendering ----------
 
-function isExpanded(): boolean {
-	return expanded;
-}
-
-/** Mode emoji: one glance tells task from advisor from web-research. */
-const MODE_EMOJI: Record<string, string> = {
-	task: "🛠️",
-	advisor: "🧭",
-	"web-research": "🌐",
-};
-
 /** 61s -> "1m01s", 3h -> "3h00m": short enough for a list line. */
 function fmtDuration(ms: number): string {
 	const s = Math.floor(ms / 1000);
@@ -239,19 +235,16 @@ function fmtDuration(ms: number): string {
 }
 
 /**
- * The mode emoji and the one line of text that describes an agent right now. Right side output uses
- * the muted (thinking) color so it stays in the background. Done rows keep the final run time.
+ * The emoji + amber identity dot and the one line of text that describes an agent right now.
+ * Right side output uses the muted (thinking) color so it stays in the background. Done rows keep
+ * the final run time.
  */
-function statusOf(row: AgentRow, theme: ExtensionContext["ui"]["theme"]): { dot: string; text: string } {
-	const emoji = MODE_EMOJI[row.mode] ?? "🛠️";
+function statusOf(row: AgentRow, theme: ExtensionContext["ui"]["theme"]): string {
 	if (row.end) {
-		return {
-			dot: emoji,
-			text: theme.fg("muted", `${row.end.note} · ran ${fmtDuration(row.end.at - row.start)}`),
-		};
+		return theme.fg("muted", `${row.end.note} · ran ${fmtDuration(row.end.at - row.start)}`);
 	}
 	const dur = theme.fg("dim", ` · ${fmtDuration(Date.now() - row.start)}`);
-	return { dot: emoji, text: theme.fg("muted", (row.activity || "starting…") + dur) };
+	return theme.fg("muted", (row.activity || "starting…") + dur);
 }
 
 /** Mouse clicks only reach a component in fullscreen mode (regular mode leaves the mouse to the terminal). */
@@ -263,7 +256,7 @@ function renderList(width: number): string[] {
 	const theme = ctxRef?.ui.theme;
 	if (!theme) return [];
 	const list = [...rows.values()];
-	const expanded = isExpanded();
+	const expandedVar = expanded;
 	const running = list.filter((r) => !r.end).length;
 	const done = list.filter((r) => r.end?.ok).length;
 	const failed = list.filter((r) => r.end && !r.end.ok).length;
@@ -278,21 +271,28 @@ function renderList(width: number): string[] {
 		: `click to expand · again for detail${click}`;
 	const out: string[] = [
 		truncateToWidth(
-			theme.fg("accent", `${expanded ? "▾" : "▸"} agents · ${counts}`) + theme.fg("dim", `  ${hint}`),
+			// amber title: the same sub-agent color identity as the popup frame and the entry rows; the
+			// arrow shows click-to-expand, like the brief/reply entries
+			theme.fg("warning", `${expandedVar ? "▾" : "▸"} agents · ${counts}`) + theme.fg("dim", `  ${hint}`),
 			width,
 		),
 	];
 	hitRows = [];
 
-	const shown = expanded ? list : list.slice(0, COLLAPSED_MAX);
+	const shown = expandedVar ? list : list.slice(0, COLLAPSED_MAX);
 	for (const row of shown) {
 		const start = out.length;
-		const { dot, text } = statusOf(row, theme);
-		// the mode only deserves a column when the list mixes modes; collapsed keeps the name short so
-		// the activity text stays readable (the expanded view shows it in full)
+		const text = statusOf(row, theme);
+		// the mode emoji is the row marker (one glance tells task from advisor); collapsed keeps the
+		// name short so the activity text stays readable (the expanded view shows it in full)
 		const label = row.mode === "task" ? row.session : `${row.session} ${theme.fg("dim", row.mode)}`;
-		const name = expanded ? label : truncateToWidth(label, 30, "…");
-		out.push(truncateToWidth(`  ${dot} ${theme.fg("muted", name)} ${theme.fg("dim", "│")} ${text}`, width));
+		const name = expandedVar ? label : truncateToWidth(label, 30, "…");
+		out.push(
+			truncateToWidth(
+				`  ${MODE_EMOJI[row.mode] ?? "🛠️"} ${theme.fg("muted", name)} ${theme.fg("dim", "│")} ${text}`,
+				width,
+			),
+		);
 		if (expanded) {
 			const tail = row.tail.length > 0 ? row.tail : ["(no output yet)"];
 			for (const line of tail) {

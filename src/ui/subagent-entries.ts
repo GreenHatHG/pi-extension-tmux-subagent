@@ -44,7 +44,11 @@ interface SubagentEntryData {
 
 type EntryTheme = Parameters<Parameters<ExtensionAPI["registerEntryRenderer"]>[1]>[2];
 
-/** Build content for the collapsed and expanded forms. */
+/** Build content for the collapsed and expanded forms.
+ *
+ * Color identity: the amber dot + amber title belong to sub-agent entries only, so they read as a
+ * separate channel from the main agent's toolTitle blocks; the body stays muted/dim.
+ */
 function buildSubagentEntryContent(
 	d: Partial<SubagentEntryData>,
 	fallback: string,
@@ -56,14 +60,20 @@ function buildSubagentEntryContent(
 		const lines = body ? body.split("\n") : [];
 		const note = d.note ? ` · ${d.note}` : "";
 		return new Text(
-			theme.fg("muted", `▸ ${d.label ?? fallback} (${lines.length} lines${note}, click to expand)`),
+			`${theme.fg("warning", "● ")} ${theme.fg("warning", theme.bold(d.label ?? fallback))} ${theme.fg("muted", `· ${lines.length} lines${note}, click to expand`)}`,
 			1,
 			0,
 		);
 	}
 	const c = new Container();
-	c.addChild(new Text(theme.fg("toolTitle", theme.bold(`▾ ${d.label ?? fallback} (click to collapse)`)), 1, 0));
-	if (d.note) c.addChild(new Text(theme.fg("muted", d.note), 1, 0));
+	c.addChild(
+		new Text(
+			`${theme.fg("warning", "● ")} ${theme.fg("warning", theme.bold(`▾ ${d.label ?? fallback}`))} ${theme.fg("muted", "· click to collapse")}`,
+			1,
+			0,
+		),
+	);
+	if (d.note) c.addChild(new Text(theme.fg("dim", d.note), 1, 0));
 	c.addChild(new Markdown(body || "(empty)", 1, 0, getMarkdownTheme()));
 	return c;
 }

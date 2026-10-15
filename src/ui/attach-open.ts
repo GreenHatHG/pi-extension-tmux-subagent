@@ -70,10 +70,12 @@ export async function openAttach(session: string): Promise<AttachResult> {
 	const tty = await resolveClientTty(socketPath);
 	if (!tty) return { error: "No attached tmux client found, so there is nowhere to show the overlay." };
 	const prefix = await subagentPrefixHint();
-	// Keep TMUX=: the popup command runs on the outer server, and if that server env has TMUX, attach warns about nesting
-	const popupCmd = `TMUX= tmux -L ${SOCKET} attach -t ${shQuote(session)}`;
+	dimMainPane(socketPath, tty);
 	const args = ["-S", socketPath, "display-popup", "-c", tty];
-	// -b double + a pink -S border: make the outer overlay itself differ from the user's tmux; the title also carries the exit hint
+	// Amber border + filled title pill give the popup its own color identity. tmux -T can only make a
+	// text-width pill, never a full-width bar, so the pill + solid frame is the best tmux-native look.
+	// Title: amber pill with dark text on the left, quit hint on the right. bg=default outside the
+	// pill so the border style never bleeds behind the title text.
 	args.push(
 		"-E",
 		"-w",
@@ -81,12 +83,12 @@ export async function openAttach(session: string): Promise<AttachResult> {
 		"-h",
 		"90%",
 		"-b",
-		"double",
+		"rounded",
 		"-S",
-		"fg=colour213,bg=default",
+		"fg=colour214,bg=default",
 		"-T",
-		`sub-agent ${session} · ${prefix} d to quit watching`,
-		popupCmd,
+		`#[align=left]#[bg=colour214,fg=colour0,bold] ● ${session} #[align=right]#[bg=default,fg=colour240]${prefix} d to quit·type goes to the pane `,
+		`TMUX= tmux -L ${SOCKET} attach -t ${shQuote(session)}`,
 	);
 
 	// display-popup -E blocks until the overlay closes, so it must be fire-and-forget. Briefly wait
@@ -117,8 +119,62 @@ export async function openAttach(session: string): Promise<AttachResult> {
 	child.on("error", () => {
 		/* swallow a post-spawn error (rare) quietly */
 	});
+	// The spawned tmux exits exactly when the popup closes, so that is the moment to undo the dim
+	child.once("exit", () => restoreMainPane(socketPath, tty));
 	child.unref();
 	return error ? { error } : { prefix };
+}
+
+/** How far the pane dims while the popup is up (tmux 3.6a only accepts the boolean dim attribute). */
+const DIM_STYLE = "bg=default,fg=colour239,dim";
+/**
+ * Dim every pane in the client's current window so the popup pops. window-style is per-window and
+ * the popup draws its own layer, so it is not affected. The old value is stashed in a session
+ * option, and a failure here is fine: the popup just opens without the dim.
+ */
+async function dimMainPane(socketPath: string, tty: string): Promise<void> {
+	try {
+		const win = await run("tmux", ["-S", socketPath, "display-message", "-p", "-c", tty, "#{window_id}"]);
+		if (win.code !== 0 || !win.stdout.trim()) return;
+		const id = win.stdout.trim();
+		const old = await run("tmux", ["-S", socketPath, "show-options", "-w", "-v", "-t", id, "window-style"]);
+		await run("tmux", [
+			"-S",
+			socketPath,
+			"set-option",
+			"-w",
+			"-t",
+			id,
+			"@pi-sub-dim-saved",
+			old.stdout.trim() || "default",
+		]);
+		// boolean dim is all tmux 3.6a accepts (the percentage form dim=NN is master-only); whether it
+		// visibly dims explicit-color cells depends on the terminal, so treat it as a best-effort bonus
+		await run("tmux", ["-S", socketPath, "set-option", "-w", "-t", id, "window-style", DIM_STYLE]);
+	} catch {
+		/* display nicety only */
+	}
+}
+
+/** Undo the dim: put the saved window-style back. Runs when the popup closes. */
+function restoreMainPane(socketPath: string, tty: string): void {
+	void (async () => {
+		try {
+			const win = await run("tmux", ["-S", socketPath, "display-message", "-p", "-c", tty, "#{window_id}"]);
+			if (win.code !== 0 || !win.stdout.trim()) return;
+			const id = win.stdout.trim();
+			const saved = await run("tmux", ["-S", socketPath, "show-options", "-w", "-v", "-t", id, "@pi-sub-dim-saved"]);
+			const style = saved.stdout.trim() || "default";
+			if (style === "default") {
+				await run("tmux", ["-S", socketPath, "set-option", "-w", "-u", "-t", id, "window-style"]);
+			} else {
+				await run("tmux", ["-S", socketPath, "set-option", "-w", "-t", id, "window-style", style]);
+			}
+			await run("tmux", ["-S", socketPath, "set-option", "-w", "-u", "-t", id, "@pi-sub-dim-saved"]);
+		} catch {
+			/* best effort */
+		}
+	})();
 }
 
 /** Short "can this process open an overlay at all" check, shared by /attach and the agent list. */
