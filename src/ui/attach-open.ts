@@ -87,7 +87,7 @@ export async function openAttach(session: string): Promise<AttachResult> {
 		"-S",
 		"fg=colour214,bg=default",
 		"-T",
-		`#[align=left]#[bg=colour214,fg=colour0,bold] ● ${session} #[align=right]#[bg=default,fg=colour240]${prefix} d / click bar to quit `,
+		`#[align=left]#[bg=colour214,fg=colour0,bold] ● ${session} #[align=right]#[bg=default,fg=colour240]${prefix} d / click here to quit `,
 		`TMUX= tmux -L ${SOCKET} attach -t ${shQuote(session)}`,
 	);
 
@@ -189,5 +189,5 @@ export function manualAttachCmd(session?: string): string {
 
 /** Post-attach notice: what to press to leave, what NOT to press. */
 export function popupMsg(name: string, prefix: string): string {
-	return `Attached to ${name} in an overlay. To quit: ${prefix} d or a click on the inner status bar (only detaches the overlay; the sub-agent keeps running). Note Ctrl-c is not quit — it goes into the sub-agent; scroll / ${prefix} [ to look back (normal attach: ${prefix} x / & / : really kills the session, and typing goes into the pane).`;
+	return `Attached to ${name} in an overlay. To quit: ${prefix} d or a click on the bottom-right "click here to quit" hint (only detaches the overlay; the sub-agent keeps running). Note Ctrl-c is not quit — it goes into the sub-agent; scroll / ${prefix} [ to look back (normal attach: ${prefix} x / & / : really kills the session, and typing goes into the pane).`;
 }
