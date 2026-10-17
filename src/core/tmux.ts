@@ -117,22 +117,23 @@ export async function subagentPrefixHint(): Promise<string> {
 }
 
 /**
- * Root-table mouse bindings that turn a status-bar click into a detach: the inner attach client
- * exits, -E closes the popup, and the sub-agent keeps running. No prefix keys needed.
+ * Root-table mouse binding that turns a click on the right-hand hint zone into a detach: the
+ * inner attach client exits, -E closes the popup, and the sub-agent keeps running. No prefix keys
+ * needed.
  *
  * bind-key is server-global on the pi-sub socket, so guard the detach with the @pi-sub-parent-session
  * option (set at launch for every sub-agent): sessions without it fall back to the default behavior.
- * Pane-area clicks are NOT touched on purpose — the sub-agent runs the pi TUI, which uses the mouse
- * itself, so pane events must keep flowing to it.
+ * The status bar is split into three click zones: left pill -> *StatusLeft, window list -> *Status,
+ * right hint -> *StatusRight. Only the hint zone (StatusRight) is bound, because the hint text is
+ * the only place that says "click here to quit" — everywhere else keeps tmux's default behavior
+ * (switch window, session menu, ...). Pane-area clicks are NOT touched on purpose — the sub-agent
+ * runs the pi TUI, which uses the mouse itself, so pane events must keep flowing to it.
  */
+const detachIfSub = `if -F '#{!=:#{@pi-sub-parent-session},}' 'detach-client' 'switch-client -t='`;
 const STATUS_CLICK_DETACH: Array<[string, string, string]> = [
-	["-n", "MouseDown1Status", `if -F '#{!=:#{@pi-sub-parent-session},}' 'detach-client' 'switch-client -t='`],
-	[
-		"-n",
-		"MouseDown3Status",
-		// right click: detach too, else the default session/window menu would offer kill targets
-		`if -F '#{!=:#{@pi-sub-parent-session},}' 'detach-client' { display-menu -t= -xW -yW -T '#[align=centre]#{window_index}:#{window_name}' '' }`,
-	],
+	// the hint lives in its own range: MouseDown1StatusRight is unbound by default, so this is the
+	// only key needed — clicking anything else on the bar keeps the stock tmux behavior
+	["-n", "MouseDown1StatusRight", detachIfSub],
 ];
 
 /**
@@ -156,7 +157,7 @@ export async function styleSubagentSession(session: string): Promise<void> {
 		// click hint first: it is the cheapest way out (no prefix keys); prefix d stays as the keyboard path
 		[
 			"status-right",
-			`#[bg=colour235,fg=colour214,bold] click bar to quit · #[bg=colour235,fg=colour240]popup · ${hint} d `,
+			`#[bg=colour235,fg=colour214,bold] click here to quit · #[bg=colour235,fg=colour240]popup · ${hint} d `,
 		],
 		["window-status-separator", "#[bg=colour235,fg=colour240]│"],
 	];
