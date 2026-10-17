@@ -117,6 +117,25 @@ export async function subagentPrefixHint(): Promise<string> {
 }
 
 /**
+ * Root-table mouse bindings that turn a status-bar click into a detach: the inner attach client
+ * exits, -E closes the popup, and the sub-agent keeps running. No prefix keys needed.
+ *
+ * bind-key is server-global on the pi-sub socket, so guard the detach with the @pi-sub-parent-session
+ * option (set at launch for every sub-agent): sessions without it fall back to the default behavior.
+ * Pane-area clicks are NOT touched on purpose — the sub-agent runs the pi TUI, which uses the mouse
+ * itself, so pane events must keep flowing to it.
+ */
+const STATUS_CLICK_DETACH: Array<[string, string, string]> = [
+	["-n", "MouseDown1Status", `if -F '#{!=:#{@pi-sub-parent-session},}' 'detach-client' 'switch-client -t='`],
+	[
+		"-n",
+		"MouseDown3Status",
+		// right click: detach too, else the default session/window menu would offer kill targets
+		`if -F '#{!=:#{@pi-sub-parent-session},}' 'detach-client' { display-menu -t= -xW -yW -T '#[align=centre]#{window_index}:#{window_name}' '' }`,
+	],
+];
+
+/**
  * Give watchers a look that differs from the user's own tmux: an amber status bar matching the
  * popup's color identity + a "sub-agent" label + an always-on exit hint (sub-sessions inherit the
  * user tmux.conf, so by default they look identical).
@@ -133,8 +152,12 @@ export async function styleSubagentSession(session: string): Promise<void> {
 		["status-style", "bg=colour235,fg=colour250"],
 		["status-left-length", "30"],
 		["status-left", "#[bg=colour214,fg=colour0,bold] sub-agent "],
-		["status-right-length", "40"],
-		["status-right", `#[bg=colour235,fg=colour240] popup · #[bg=colour235,fg=colour214,bold] ${hint} d to quit `],
+		["status-right-length", "60"],
+		// click hint first: it is the cheapest way out (no prefix keys); prefix d stays as the keyboard path
+		[
+			"status-right",
+			`#[bg=colour235,fg=colour214,bold] click bar to quit · #[bg=colour235,fg=colour240]popup · ${hint} d `,
+		],
 		["window-status-separator", "#[bg=colour235,fg=colour240]│"],
 	];
 	const windowOpts: Array<[string, string]> = [
@@ -150,5 +173,11 @@ export async function styleSubagentSession(session: string): Promise<void> {
 	};
 	for (const [opt, value] of sessionOpts) push([], opt, value);
 	for (const [opt, value] of windowOpts) push(["-w"], opt, value);
+	// the bindings are server-global, so re-binding per launch is harmless and idempotent, and it also
+	// covers the very first sub-agent after the server starts fresh
+	for (const [flags, key, cmd] of STATUS_CLICK_DETACH) {
+		if (args.length > 0) args.push(";");
+		args.push("bind-key", flags, key, cmd);
+	}
 	await runTmux(args);
 }
