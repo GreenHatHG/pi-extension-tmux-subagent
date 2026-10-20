@@ -25,6 +25,10 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
   │               -p 路径由 pane shell 写入 pi 的真实退出码）
   └── log         子 agent 的输出日志（仅 -p 回退路径写入，批处理运行输出，用于
                   排查；watchdog 路径的画面在 tmux pane 里，回看读会话 jsonl）
+  └── signals.log 子 agent 的飞行记录仪（诊断用）：运行中收到的外部信号、崩溃与退出码，
+                  同步逐行落盘。排查「exit=0 却没有 result.md」的假成功时先读它：
+                  有 signal 行 = 被外部信号杀（pi 收到 SIGTERM/SIGHUP 会优雅退出，
+                  exit 码恰好是 0）；只有 process exit 行 = 事件循环自己耗尽了。
 ```
 
 ### 启动与收尾流程
@@ -151,6 +155,23 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 - 未全局安装（如本地开发路径）：靠动态加载。扩展路径依次尝试：环境变量 `PI_WEB_ACCESS_EXTENSION`（显式覆盖，设了就只信它）> Node 解析 `pi-web-access/package.json`（覆盖 npm 安装副本，入口读其 `pi.extensions[0]`）> 同级 checkout（本包与 pi-web-access 的本地副本并排放在同一目录）。全部失败不阻断启动，失败原因（含已尝试的位置与修复指引）注入子 agent 首回合，模型会把失败写进交付物并停止。
 
 主会话默认不带任何联网工具，一切搜索/抓取都走 `web_research`（工具 guideline 强导向），防止原始网页内容进入主会话上下文。任务模式的 `spawn_sub` 子 agent 不注入引导变量，保持无网；任务中途要搜的活儿由主会话拆给 `web_research`。
+
+## verification（硬门，默认关闭）
+
+`verification` 移植了 Claude Code 的 verification agent：一个对抗式验证子 agent，专职“把刚做完的实现弄坏”——跑 build、测试、linter、边界输入，报告必须以 `VERDICT: PASS / FAIL / PARTIAL` 结尾，每个 PASS 都必须带真实命令输出（只有阅读代码没有命令的 PASS 视为跳过，会被拒绝）。
+
+### 硬门：不验证不许收尾
+
+与 advisor 的“建议”不同，verification 是代码层的强制（这正是移植它要解决的问题）：开启后，只要有非平凡改动（默认 ≥ 3 个不同文件被 write/edit 成功落盘，可用配置改）在收尾时没有验证结论，门会自动注入一条 user message 强制模型先跑 `verification` 工具再报告完成（最多 `nudgeLimit` 次，默认 3；到顶后不再自动催，改为给用户发显式警告，绝不静默放行）。改动的记账来自工具执行结果（成功落盘时的 path+mtime），不来自模型自己的描述，所以模型口头上说“改完了”骗不过门；同一文件重复写入会生成新指纹，修完 FAIL 之后再验的路径也不会被误放行。账本存在会话 custom entries 里，`/reload`、resume 之后状态不丢。
+
+**触发时机跟 watchdog 协调（完成顺序，不是文件顺序）**：watchdog 在跑时，`agent_settled` 只说明「这一轮结束了」，不说明「任务做完了」（watchdog 会继续催，断流也会 settle）。所以门在 watchdog 活跃时对普通 settle 保持沉默，只认 watchdog 的 done 信号（`watchdog_decide` 收尾，pi-watchdog 发出的 `watchdog:stopped`，常驻模式打盹也发）之后的那个 settle，在那时刻才催验证；没有 watchdog（或已停/额度用完）时退回「settle 即完成」的旧行为兜底。这样断流恢复永远由 watchdog 负责，验证只发生在活真正干完之后。verifier 子 agent 侧同样按完成顺序记账：主会话的轮询等 exit 文件出现（收尾真跑完）才从 result.md 读 verdict，避免把断流后即将被改写的半截报告当成结论。
+
+开关与命令：
+
+- `/verification` 面板式开关（写在 `~/.pi/agent/subagent_advisor.json` 的 `verification` section：`{ "enabled": true, "nudgeLimit": 3, "minChangedFiles": 3 }`），**立即生效**（门在决策时现读配置，不像 advisor 的开关要重启），页脚常驻显示当前状态。
+- 默认关闭：工具照常注册，模型可以主动调用，但门不拦截。
+
+验证子 agent 的工具白名单是 `read` / `bash` / `write` / `edit`（+ watchdog 路径的 `watchdog_decide`）。write/edit 会经 write-fence 拦住：verifier 只能写到交付文件本身（result.md 路径），写别的地方会被 block，算是把“不许改项目”从只靠 prompt 约束升级成了硬防线。**残余风险**：verifier 要跑 build/test，所以 bash 不能像 advisor 那样收只读（build 产物要写盘），verifier 用 bash 重定向写项目文件没有防线——这与 Claude Code 原版一致（原版同样只靠 prompt 约束 bash）。如果后续给 pi-extension-bash-guard 加一个 verifier 档位（允许 build/test/写 /tmp、拦项目目录写），这里接入即可。
 
 ## 上下文与 token 开销
 

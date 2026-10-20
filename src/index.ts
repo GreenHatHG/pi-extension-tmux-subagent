@@ -1,21 +1,30 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveAdvisor, resolveAdvisorModel } from "./core/config";
 import { resolveProcessRole } from "./core/env";
+import { setupFlightRecorder } from "./core/flight-recorder";
 import { shQuote } from "./core/tmux";
 import { launchSub } from "./launch/launch";
-import { advisorMode, taskMode, webResearchMode } from "./modes/types";
+import { advisorMode, taskMode, verificationMode, webResearchMode } from "./modes/types";
 import { setupSubagentSelfCheck } from "./session/gate";
 import { setupSubagentReaper } from "./session/reap";
+import { setupVerificationGate } from "./session/verification-gate";
 import { bootstrapWebResearch } from "./session/web-bootstrap";
+import { setupWriteFence } from "./session/write-fence";
 import { notifyAdvisorMissingModel, setupAdvisor, setupAdvisorModelGuard } from "./tools/advisor";
 import { type SessionAdvisor, setupAdvisorSettings } from "./tools/advisor-settings";
 import { setupSpawnSub } from "./tools/spawn-sub";
+import { setupVerification } from "./tools/verification";
+import { setupVerificationSettings } from "./tools/verification-settings";
 import { setupWebResearch } from "./tools/web-research";
 import { registerAgentWidgetEntry, setupAgentWidget } from "./ui/agent-widget";
 import { setupAttachCommand } from "./ui/attach-command";
 import { registerSubagentEntryRenderers } from "./ui/subagent-entries";
 
 export default async function (pi: ExtensionAPI) {
+	// Flight recorder (diagnostic): when PI_SUBAGENT_DEBUG is set (main session injects it for
+	// sub-agent panes only), record signals/crashes/exits so a silent exit=0 leaves a trace.
+	setupFlightRecorder();
+
 	// Parse the process role once; every main-session/sub-agent branch uses role after that
 	const role = resolveProcessRole();
 
@@ -28,6 +37,9 @@ export default async function (pi: ExtensionAPI) {
 	// setupSubagentSelfCheck decides whether to register the missing-watchdog self-check by role.watchdog.
 	if (role.kind === "sub") {
 		setupSubagentSelfCheck(pi, role);
+		// Write fence: when the pane got PI_SUB_WRITE_WHITELIST, write/edit may only target the
+		// deliverable. No-op in panes without the env var (and never in the main session).
+		setupWriteFence(pi);
 		return;
 	}
 
@@ -88,4 +100,11 @@ export default async function (pi: ExtensionAPI) {
 	setupSpawnSub(pi, (question, context, _sessionFile, parentSessionId) =>
 		launchSub(pi, question, context, taskMode, [], { parentSessionId }),
 	);
+
+	// ---------- verification (tool always registered; the hard gate reads its config at decision time) ----------
+	const verificationGate = setupVerificationGate(pi);
+	setupVerification(pi, verificationGate, (question, context, _sessionFile, parentSessionId) =>
+		launchSub(pi, question, context, verificationMode, [], { parentSessionId }),
+	);
+	setupVerificationSettings(pi);
 }

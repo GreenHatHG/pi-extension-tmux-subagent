@@ -7,8 +7,14 @@
  * extraEnvArgs (extra tmux -e injection), display (TUI label).
  */
 import { ENV_BASH_GUARD_MODE, ENV_SUB_WEB } from "../core/env";
-import { type BriefOpts, buildAdvisorBrief, buildTaskBrief, buildWebResearchBrief } from "./briefs";
-import { advisorPresetFlags, webResearchPresetFlags } from "./presets";
+import {
+	type BriefOpts,
+	buildAdvisorBrief,
+	buildTaskBrief,
+	buildVerificationBrief,
+	buildWebResearchBrief,
+} from "./briefs";
+import { advisorPresetFlags, verificationPresetFlags, webResearchPresetFlags } from "./presets";
 
 /** Labels for brief/reply entries in the TUI (all three modes share one renderer). */
 export interface SubagentDisplay {
@@ -16,7 +22,7 @@ export interface SubagentDisplay {
 	replyLabel: string;
 }
 
-export type ModeName = "task" | "advisor" | "web-research";
+export type ModeName = "task" | "advisor" | "web-research" | "verification";
 
 export interface SubagentMode {
 	name: ModeName;
@@ -55,6 +61,16 @@ export const advisorMode: SubagentMode = {
 	// Harmless when the extension is absent, since nothing else reads the var.
 	extraEnvArgs: () => ["-e", `${ENV_BASH_GUARD_MODE}=advisor`],
 	display: { briefLabel: "Advisor brief", replyLabel: "Advisor reply" },
+};
+
+export const verificationMode: SubagentMode = {
+	name: "verification",
+	brief: buildVerificationBrief,
+	presetFlags: verificationPresetFlags,
+	// Deliberately NO bash-guard env (unlike advisor): the verifier must run builds/tests, which
+	// write artifacts. "Don't modify the project" is enforced by the tool whitelist + system prompt.
+	extraEnvArgs: () => [],
+	display: { briefLabel: "Verification brief", replyLabel: "Verification reply" },
 };
 
 export const webResearchMode: SubagentMode = {

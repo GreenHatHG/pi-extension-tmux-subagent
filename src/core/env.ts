@@ -21,6 +21,21 @@ export const ENV_WATCHDOG = "PI_WATCHDOG";
 export const ENV_SUB_WEB = "PI_SUB_WEB";
 
 /**
+ * Flight-recorder switch (diagnostic): when set to a file path, the sub-agent process records
+ * signals/crashes/exits there (src/core/flight-recorder.ts). The main session injects it for every
+ * sub-agent pane; unset in the main session itself.
+ */
+export const ENV_SUB_DEBUG = "PI_SUBAGENT_DEBUG";
+
+/**
+ * Write fence (PI_SUB_WRITE_WHITELIST): when set to a path, write/edit calls in that sub-agent
+ * may only target this one file (the deliverable result.md). Injected for every sub-agent pane
+ * (baseEnvArgs); enforced by session/write-fence.ts inside the sub-agent process. Unset in the
+ * main session, so main-session writes stay unfenced.
+ */
+export const ENV_SUB_WRITE_WHITELIST = "PI_SUB_WRITE_WHITELIST";
+
+/**
  * Fences the advisor's bash to read-only forensics. Owned by the bash-guard extension, which reads
  * this var on every tool call; injected here so the two extensions never have to know about each
  * other's config. Absent extension = the var is simply never read.

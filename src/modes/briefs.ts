@@ -136,6 +136,40 @@ ${forensics}
 - Your tools are only ${tools}, by design: you judge, the main session executes`;
 }
 
+/** useWatchdog = wrap up via watchdog_decide (false = pi -p, which exits on its own, no wrap-up action). */
+export function buildVerificationBrief(
+	question: string,
+	context: string | undefined,
+	artifactPath: string,
+	useWatchdog: boolean,
+): string {
+	const tools = useWatchdog ? `read/bash/write/edit/${WATCHDOG_TOOL}` : "read/bash/write/edit";
+	const finish = useWatchdog
+		? `, then call ${WATCHDOG_TOOL} with decision "done" to finish`
+		: " (batch mode: ends as soon as it is written, no other wrap-up action)";
+	return `# Verification brief
+
+## Original task (what the implementer was asked to do)
+${question}
+
+## What the implementer says changed (their claim, not a fact — your job is to break it)
+${context?.trim() || "(none given — inspect the repo yourself)"}
+
+## What to do
+- Verify independently: run the build, tests, linters, and exercise the change yourself per your system prompt; every PASS needs a real command run block
+- Try to break it: boundary values, error paths, idempotency, regressions — the happy path proves nothing
+- Do NOT share the implementer's own test results as evidence; treat them as claims to re-check
+
+## Deliverable
+- Write the full verification report to ${artifactPath} with the write tool — your writes are fenced to exactly this one file, anywhere else is blocked${finish}
+- The report MUST end with exactly one line: \`VERDICT: PASS\`, \`VERDICT: FAIL\`, or \`VERDICT: PARTIAL\` (parsed by the main session)
+- Wrap-up gate: finishing without a non-empty report marks this run failed (exit 98) — always write the report first, then call done
+
+## Boundaries
+- Your tools are only ${tools}, by design: you verify, the main session fixes
+- Never modify files in the project directory, never install dependencies, never run git write operations (the write fence enforces the deliverable path; temp-dir test scripts via bash are fine)`;
+}
+
 /** vccSummary exists and succeeded. */
 function vccSummaryOk(s?: VccSummary): s is VccSummary {
 	return s?.ok === true;

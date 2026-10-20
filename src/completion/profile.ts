@@ -1,6 +1,6 @@
 /** Completion protocol: the watchdog interactive path and the pi -p batch path, plus the tmux hook and command chain that tell the main session when it's done. */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { ENV_SUB_DONE, ENV_SUB_EXIT_FILE, ENV_SUBAGENT } from "../core/env";
+import { ENV_SUB_DEBUG, ENV_SUB_DONE, ENV_SUB_EXIT_FILE, ENV_SUB_WRITE_WHITELIST, ENV_SUBAGENT } from "../core/env";
 import type { SubagentPaths } from "../core/paths";
 import { runTmux, SOCKET, shQuote } from "../core/tmux";
 
@@ -72,10 +72,17 @@ export function resolveCompletion(useWatchdog: boolean, paths: SubagentPaths): C
 				"PI_WATCHDOG=timeout=5 max=50 mode=keep",
 				// ON_STOP is one full shell chain: write 0 -> send done signal -> after a short pause, close the session
 				"-e",
-				`PI_WATCHDOG_ON_STOP=echo 0 > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
+				// Wrap-up hard gate: the exit code reflects whether the deliverable actually exists.
+				// A watchdog_decide("done") without the report written used to pre-write 0 — a silent
+				// fake success. Now: deliverable present and non-empty => 0; missing => 98 (wrapped up
+				// without a deliverable). Signal and kill-session still run either way, so the waiter
+				// never hangs; it just sees a failure. The pane shell's `echo $?` normally never runs
+				// (the SIGHUP from kill-session wins), so this pre-written value is what the waiter reads.
+				`PI_WATCHDOG_ON_STOP=if [ -s ${paths.artifactPath} ]; then echo 0; else echo 98; fi > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
 			],
 			rollbackOnHookFailure: false,
-			exitNote: "exit file 0 = clean wrap-up; non-zero or missing = failure/abnormal exit.",
+			exitNote:
+				"exit file 0 = clean wrap-up with a non-empty deliverable; 98 = wrapped up without a deliverable (model called done but wrote no report); other non-zero or missing = failure/abnormal exit.",
 		};
 	}
 	return {
@@ -103,6 +110,14 @@ export function baseEnvArgs(paths: SubagentPaths): string[] {
 		`${ENV_SUB_EXIT_FILE}=${paths.exitFile}`,
 		"-e",
 		`${ENV_SUB_DONE}=${paths.done}`,
+		// Flight recorder: every sub-agent pane records its own death events (signals/crashes/exits)
+		// into the run dir, so a silent exit=0 (e.g. an external SIGTERM mid-run) leaves a trace.
+		"-e",
+		`${ENV_SUB_DEBUG}=${paths.dir}/signals.log`,
+		// Write fence: write/edit in the pane may only target this run's deliverable. Without it,
+		// models skip the report (a long bash redirection) and call done with no artifact.
+		"-e",
+		`${ENV_SUB_WRITE_WHITELIST}=${paths.artifactPath}`,
 	];
 }
 
