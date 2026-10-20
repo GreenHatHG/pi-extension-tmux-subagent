@@ -43,6 +43,7 @@
 		"format": "biome format --write .",
 		"lint": "biome lint .",
 		"check:biome": "biome check .",
+		"test": "bun test",
 		"typecheck": "tsc --noEmit"
 	},
 	"type": "commonjs",

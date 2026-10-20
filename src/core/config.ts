@@ -25,9 +25,21 @@ export interface AdvisorFileConfig {
 	[key: string]: unknown;
 }
 
+/** verification section fields in subagent_advisor.json (unknown keys are kept on write). */
+export interface VerificationFileConfig {
+	/** Hard gate on/off: when on, unverified non-trivial changes block completion (nudge turns). */
+	enabled?: boolean;
+	/** Max nudges per change fingerprint before the gate stops and escalates to the user. */
+	nudgeLimit?: number;
+	/** Changed-file count above which the gate fires (claude-code's non-trivial threshold). */
+	minChangedFiles?: number;
+	[key: string]: unknown;
+}
+
 /** The whole config file; unknown top-level keys are kept on write. */
 interface Config {
 	advisor?: AdvisorFileConfig;
+	verification?: VerificationFileConfig;
 	[key: string]: unknown;
 }
 
@@ -55,6 +67,43 @@ function readConfig(): Config {
 /** Read only the advisor section (for the /advisor panel; no defaults). */
 export function readAdvisorFileConfig(): AdvisorFileConfig {
 	return readConfig().advisor ?? {};
+}
+
+/** Read only the verification section (for the gate and the /verification command; no defaults). */
+export function readVerificationFileConfig(): VerificationFileConfig {
+	return readConfig().verification ?? {};
+}
+
+/** Defaults applied on top of the verification section (enabled: false = soft contract only). */
+export interface VerificationSettings {
+	enabled: boolean;
+	nudgeLimit: number;
+	minChangedFiles: number;
+}
+
+export function resolveVerification(): VerificationSettings {
+	const v = readVerificationFileConfig();
+	return {
+		enabled: v.enabled === true,
+		nudgeLimit: typeof v.nudgeLimit === "number" && v.nudgeLimit > 0 ? Math.floor(v.nudgeLimit) : 3,
+		minChangedFiles: typeof v.minChangedFiles === "number" && v.minChangedFiles > 0 ? Math.floor(v.minChangedFiles) : 3,
+	};
+}
+
+/**
+ * Write verification config back (read-modify-write, keeps unknown keys). Only the on/off switch is
+ * user-facing for now; limits stay hand-edited in the JSON.
+ */
+export function writeVerificationConfig(patch: { enabled?: boolean }): void {
+	const path = advisorConfigPath();
+	const cfg = readConfig();
+	const verification: VerificationFileConfig = { ...(cfg.verification ?? {}) };
+	if (patch.enabled !== undefined) verification.enabled = patch.enabled;
+	cfg.verification = verification;
+	mkdirSync(dirname(path), { recursive: true });
+	const tmp = `${path}.tmp-${process.pid}`;
+	writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}\n`, { mode: 0o600 });
+	renameSync(tmp, path);
 }
 
 /** Split model and thinking out of a pi --model string; if the suffix is not a known level, the whole string is the model. */
