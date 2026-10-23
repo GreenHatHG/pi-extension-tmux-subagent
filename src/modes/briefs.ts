@@ -50,7 +50,7 @@ ${completion}
 
 /** Stable list of recall CLI usage. */
 const recallCliGuide = (vccCli: string, sessionFile: string): string =>
-	`  - Search: \`${vccCli} recall ${sessionFile} <keywords>\` (multiple words are ranked by relevance; hits show only a local snippet)\n  - More usage: \`${vccCli} --help\` (only when the line above is not enough — don't explore just to read the manual)`;
+	`  - Search: \`${vccCli} recall ${sessionFile} <keywords>\` (multiple words are ranked by relevance; hits show only a local snippet)\n  - Full text of an entry: \`${vccCli} recall ${sessionFile} --expand 12,34\` (comma-separated #N indices, returns complete untruncated content — use this instead of re-querying with new keywords)\n  - Drill into a file's content: \`${vccCli} recall ${sessionFile} '#12:auth.ts'\` ('#12:auth.ts:full' for all lines)\n  - More usage: \`${vccCli} --help\` (only when the lines above are not enough — don't explore just to read the manual)`;
 
 /** Advisor forensics section (falls back by availability: pre-generated summary > recall CLI > session file only). */
 function buildAdvisorForensics(opts?: BriefOpts): string {
