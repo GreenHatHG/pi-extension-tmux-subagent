@@ -16,6 +16,9 @@ export interface VccSummary {
 	ok: boolean;
 	/** Reason when ok=false (used by the brief's fallback text). */
 	error?: string;
+	/** Exit 127 — the shell could not find the command at all, so advisor.vccCli itself is wrong. A
+	 *  working CLI that declines ("too few messages to compact") is a normal degrade, not this. */
+	commandMissing?: boolean;
 }
 
 /** compact is a synchronous delay on the launch path, so give it a generous cap. */
@@ -29,10 +32,15 @@ export async function runVccCompact(vccCli: string, sessionFile: string, outPath
 		await execAsync(cmd, { timeout: COMPACT_TIMEOUT_MS, maxBuffer: COMPACT_MAX_BUFFER });
 		return { path: outPath, ok: true };
 	} catch (e) {
-		const err = e as { stderr?: string; message?: string; killed?: boolean };
+		const err = e as { stderr?: string; message?: string; killed?: boolean; code?: number | string };
 		const reason = err.killed
 			? `compact timed out (>${COMPACT_TIMEOUT_MS / 1000}s)`
 			: (err.stderr?.trim() || err.message || "unknown error").split("\n")[0];
-		return { path: outPath, ok: false, error: reason };
+		return {
+			path: outPath,
+			ok: false,
+			error: reason,
+			commandMissing: err.code === 127,
+		};
 	}
 }

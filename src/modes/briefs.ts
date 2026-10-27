@@ -76,7 +76,7 @@ function buildAdvisorForensics(opts?: BriefOpts): string {
 	const summary = opts?.vccSummary;
 	if (!vccSummaryOk(summary)) {
 		return `## Raw session forensics (recall CLI, read-only)
-- Summary pre-generation failed, so there is no compressed summary to read directly: the main session's summary in this brief may miss command output, raw errors and timing details. When you suspect a gap, run the recall CLI with bash to recover it:
+- Summary pre-generation failed (${summary?.error ?? "no reason recorded"}), so there is no compressed summary to read directly: the main session's summary in this brief may miss command output, raw errors and timing details. A failed command stays failed for this run — don't go hunting for a missing binary; just fall back. When you suspect a gap, run the recall CLI with bash to recover it:
 ${guide}
   - You can also run \`${vccCli} compact ${sessionFile}\` yourself to see the whole session's compressed summary (stdout only, no --write)
 - Session file: ${sessionFile}
@@ -186,7 +186,7 @@ ${context?.trim() || "(none given — inspect the repo yourself)"}
 }
 
 /** vccSummary exists and succeeded. */
-function vccSummaryOk(s?: VccSummary): s is VccSummary {
+function vccSummaryOk(s?: VccSummary): s is VccSummary & { ok: true } {
 	return s?.ok === true;
 }
 

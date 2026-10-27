@@ -182,12 +182,22 @@ export async function launchSub(
 		return { ok: false, text: clash };
 	}
 
-	// Advisor forensics step 1: pre-generate the vcc compressed summary (create the dir first; a
-	// failure does not block, the brief falls back to recall-only)
+	// Advisor forensics step 1: pre-generate the vcc compressed summary (create the dir first). Only a
+	// command the shell cannot find blocks the launch (exit 127 = advisor.vccCli is wrong): the advisor
+	// would start blind and spend its whole run probing for the missing binary. Every other failure —
+	// timeout, "too few messages to compact", a session file not yet on disk — is ordinary, so it
+	// launches and the brief carries the reason.
 	let vccSummary: VccSummary | undefined;
 	if (opts?.sessionFile && opts?.vccCli) {
 		mkdirSync(paths.dir, { recursive: true });
 		vccSummary = await runVccCompact(opts.vccCli, opts.sessionFile, join(paths.dir, "vcc-summary.md"));
+		if (!vccSummary.ok && vccSummary.commandMissing) {
+			rmSync(vccSummary.path, { force: true });
+			return {
+				ok: false,
+				text: `Advisor not started: the forensics command could not be found (${vccSummary.error}). advisor.vccCli is currently: ${opts.vccCli}. If the binary is not on PATH, swap the bare command name for its absolute path (quoted inside the JSON string, the shell splits on spaces), or delete the key to run the advisor without forensics.`,
+			};
+		}
 	}
 
 	const brief = mode.brief(question, context, paths.artifactPath, useWatchdog, {
