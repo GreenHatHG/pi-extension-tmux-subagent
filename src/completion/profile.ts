@@ -78,7 +78,12 @@ export function resolveCompletion(useWatchdog: boolean, paths: SubagentPaths): C
 				// without a deliverable). Signal and kill-session still run either way, so the waiter
 				// never hangs; it just sees a failure. The pane shell's `echo $?` normally never runs
 				// (the SIGHUP from kill-session wins), so this pre-written value is what the waiter reads.
-				`PI_WATCHDOG_ON_STOP=if [ -s ${paths.artifactPath} ]; then echo 0; else echo 98; fi > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
+				// Authorization: only the pane pi itself may fire this chain. The pi watchdog extension
+				// writes its pid to the pidfile at session_start; the chain compares it with the spawning
+				// process ($PPID). Any descendant that inherited this env (a vitest worker running the
+				// project's tests, a stray script) has a different ppid, so the chain exits without
+				// killing the pane — this is what stops test-suite-triggered wrap-ups.
+				`PI_WATCHDOG_ON_STOP=if [ -s ${paths.dir}/pi.pid ] && [ "$(cat ${paths.dir}/pi.pid)" != "$PPID" ]; then exit 0; fi; if [ -s ${paths.artifactPath} ]; then echo 0; else echo 98; fi > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
 			],
 			rollbackOnHookFailure: false,
 			exitNote:
@@ -114,6 +119,11 @@ export function baseEnvArgs(paths: SubagentPaths): string[] {
 		// into the run dir, so a silent exit=0 (e.g. an external SIGTERM mid-run) leaves a trace.
 		"-e",
 		`${ENV_SUB_DEBUG}=${paths.dir}/signals.log`,
+		// Watchdog pidfile: the pane pi writes its pid here at session_start, and the ON_STOP chain
+		// only fires when its spawning process matches — descendants inheriting the env (tests, etc.)
+		// can no longer kill-session the pane. Watchdog-only: batch mode has no watchdog extension.
+		"-e",
+		`PI_WATCHDOG_PIDFILE=${paths.dir}/pi.pid`,
 		// Write fence: write/edit in the pane may only target this run's deliverable. Without it,
 		// models skip the report (a long bash redirection) and call done with no artifact.
 		"-e",

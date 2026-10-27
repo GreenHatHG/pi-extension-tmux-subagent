@@ -16,7 +16,7 @@
  *
  * Off by default: no env var, no listeners, zero overhead (a real sub-agent only).
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { ENV_SUB_DEBUG } from "./env";
 
 /** Log file path from the env var; undefined when unset/empty (recorder off). */
@@ -52,6 +52,18 @@ export function setupFlightRecorder(): void {
 	for (const signal of ["SIGTERM", "SIGHUP", "SIGINT"] as const) {
 		process.prependListener(signal, () => {
 			record(`signal ${signal} received`);
+			// Who sent it? Node can't see the sender pid, but the process state narrows it down:
+			// parent gone at HUP time = session/pty teardown; parent alive = targeted kill/kill-session.
+			try {
+				const stat = readFileSync("/proc/self/stat", "utf8");
+				const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+				const ppid = Number(fields[1]);
+				let parentState = "gone";
+				try {
+					parentState = readFileSync(`/proc/${ppid}/stat`, "utf8").split(") ")[1]?.split(" ")[0] ?? "gone";
+				} catch {}
+				record(`  ppid=${ppid} parentState=${parentState} pgrp=${fields[2]} tty=${fields[6]}`);
+			} catch {}
 			// Our listener is prepended (runs FIRST); pi's handler, if any, is registered after
 			// ours, so it runs later in the same dispatch and will exit(0) itself. Only exit here
 			// if nobody else will: setTimeout(0) runs after all other listeners of this dispatch.

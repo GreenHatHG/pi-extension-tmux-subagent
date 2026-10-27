@@ -33,6 +33,10 @@ export interface VerificationFileConfig {
 	nudgeLimit?: number;
 	/** Changed-file count above which the gate fires (claude-code's non-trivial threshold). */
 	minChangedFiles?: number;
+	/** Consecutive FAIL verdicts after which the nudge carries a triage warning (soft limit). */
+	failSoftLimit?: number;
+	/** Consecutive FAIL verdicts after which the gate stops the fix/verify loop and hands it to the user. */
+	failHardLimit?: number;
 	[key: string]: unknown;
 }
 
@@ -79,14 +83,26 @@ export interface VerificationSettings {
 	enabled: boolean;
 	nudgeLimit: number;
 	minChangedFiles: number;
+	/** Soft FAIL-round limit: from here on the nudge asks the model to triage before fixing again. */
+	failSoftLimit: number;
+	/** Hard FAIL-round limit: from here on the gate stops the loop and escalates to the user. */
+	failHardLimit: number;
 }
+
+const positiveInt = (v: unknown, fallback: number): number =>
+	typeof v === "number" && v > 0 ? Math.floor(v) : fallback;
 
 export function resolveVerification(): VerificationSettings {
 	const v = readVerificationFileConfig();
+	const failSoftLimit = positiveInt(v.failSoftLimit, 2);
+	// Hard can never sit below soft, or the warning tier would be dead code
+	const failHardLimit = Math.max(failSoftLimit, positiveInt(v.failHardLimit, 4));
 	return {
 		enabled: v.enabled === true,
-		nudgeLimit: typeof v.nudgeLimit === "number" && v.nudgeLimit > 0 ? Math.floor(v.nudgeLimit) : 3,
-		minChangedFiles: typeof v.minChangedFiles === "number" && v.minChangedFiles > 0 ? Math.floor(v.minChangedFiles) : 3,
+		nudgeLimit: positiveInt(v.nudgeLimit, 3),
+		minChangedFiles: positiveInt(v.minChangedFiles, 3),
+		failSoftLimit,
+		failHardLimit,
 	};
 }
 

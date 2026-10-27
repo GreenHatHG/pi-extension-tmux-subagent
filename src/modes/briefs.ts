@@ -155,13 +155,28 @@ ${question}
 ## What the implementer says changed (their claim, not a fact — your job is to break it)
 ${context?.trim() || "(none given — inspect the repo yourself)"}
 
+## Scope (settle it before you start)
+- In scope: the original task above, plus regressions this change introduced in the code it touches. Nothing else.
+- Out of scope: defects that predate the change, hypothetical setups (older tool versions, exotic filesystems, symlinked or hostile paths, concurrent sessions), and hardening nobody asked for. These belong in Observations, not in the verdict.
+- Stop when the task's own behavior and its regressions are covered: probing past that buys latency, not safety.
+
 ## What to do
 - Verify independently: run the build, tests, linters, and exercise the change yourself per your system prompt; every PASS needs a real command run block
 - Try to break it: boundary values, error paths, idempotency, regressions — the happy path proves nothing
 - Do NOT share the implementer's own test results as evidence; treat them as claims to re-check
 
+## What a FAIL means here
+- The three verdicts mean exactly this:
+  - PASS = the original task is met, nothing blocking found
+  - PARTIAL = the task is met, but something is explicitly not covered or rests on an assumption you must state in the report
+  - FAIL = the task is not met, or the change introduced a regression, data loss, or a crash path in the shipped code
+- PARTIAL is NOT a soft FAIL: a PARTIAL still lets the main session finish, so use it for "verified, with these limits", never for "this is broken".
+- Everything that is not one of the three above goes under \`## Observations (non-blocking)\` and must NOT move the verdict: predates the change, out of scope, or an edge case you could not hit in a normal setup.
+- A FAIL must name the part of the original task it breaks. When everything you can point at is an observation, the verdict is PASS with those observations listed.
+
 ## Deliverable
 - Write the full verification report to ${artifactPath} with the write tool — your writes are fenced to exactly this one file, anywhere else is blocked${finish}
+- Sections in order: what you ran and what it printed -> per-check result -> \`## Observations (non-blocking)\` (always present, write "none" if empty) -> the verdict line
 - The report MUST end with exactly one line: \`VERDICT: PASS\`, \`VERDICT: FAIL\`, or \`VERDICT: PARTIAL\` (parsed by the main session)
 - Wrap-up gate: finishing without a non-empty report marks this run failed (exit 98) — always write the report first, then call done
 

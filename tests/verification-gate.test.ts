@@ -113,4 +113,43 @@ describe("applyLedger", () => {
 		expect(s.verifierArtifactPath).toBe("");
 		expect(s.verifierSnapshot).toHaveLength(0);
 	});
+
+	test("PASS freezes the files it covered; FAIL freezes nothing", () => {
+		const s = emptyStateForTest();
+		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
+		const fp = fingerprintOf(s.pending);
+		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
+		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
+		expect(s.frozen.size).toBe(0);
+
+		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
+		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "PASS", artifactPath: "/tmp/x/result.md" });
+		expect([...s.frozen.keys()]).toEqual(["/a.ts"]);
+
+		// The warning is recorded, so a reload cannot repeat it
+		applyLedger(s, { kind: "freeze-warn", path: "/a.ts", fingerprint: fp });
+		expect(s.frozenWarned.get("/a.ts")).toBe(fp);
+	});
+
+	test("fail streak: FAIL grows it, PASS resets it, PARTIAL leaves it alone", () => {
+		const s = emptyStateForTest();
+		const fail = () =>
+			applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
+		fail();
+		fail();
+		expect(s.failStreak).toBe(2);
+		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "PARTIAL", artifactPath: "/tmp/x/result.md" });
+		expect(s.failStreak).toBe(2);
+		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "PASS", artifactPath: "/tmp/x/result.md" });
+		expect(s.failStreak).toBe(0);
+	});
+
+	test("escalate records the streak it fired at, so the same streak does not escalate twice", () => {
+		const s = emptyStateForTest();
+		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
+		applyLedger(s, { kind: "escalate", streak: 1 });
+		expect(s.escalatedAt).toBe(1);
+		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "PASS", artifactPath: "/tmp/x/result.md" });
+		expect(s.escalatedAt).toBe(0); // a PASS re-arms it
+	});
 });

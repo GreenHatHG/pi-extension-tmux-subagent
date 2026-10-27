@@ -72,7 +72,7 @@ const SUGGESTED_WAIT_TIMEOUT_SECONDS = 1800;
  * a timed-out one.
  */
 function buildMainAgentNote(paths: SubagentPaths, exitNote: string): string {
-	return `To get the result, run in bash: tmux -L ${SOCKET} wait-for ${paths.done}. Waiting must be bounded: use the bash tool's own timeout argument (${SUGGESTED_WAIT_TIMEOUT_SECONDS}s is a good pick; it is a tool-call argument, do not add a shell timeout prefix inside the command). Blocking waits cost zero tokens. On timeout just resend this command to keep waiting (tmux remembers sent signals, so it won't block forever). If it times out 2-3 times in a row and \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` still shows the session: run \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` to see what's up — the sub-agent may have skipped a ${WATCHDOG_TOOL} call or be stuck, so keep waiting or kill-session and treat it as failed. After it returns, read ${paths.artifactPath}. If exit is non-zero or the reply is empty, read ${paths.logPath} for the sub-agent's stderr to find the root cause. ${exitNote}`;
+	return `To get the result, run in bash: tmux -L ${SOCKET} wait-for ${paths.done}. Waiting must be bounded: use the bash tool's own timeout argument (${SUGGESTED_WAIT_TIMEOUT_SECONDS}s is a good pick; it is a tool-call argument, do not add a shell timeout prefix inside the command). Blocking waits cost zero tokens. On timeout just resend this command to keep waiting (tmux remembers sent signals, so it won't block forever). If it times out 2-3 times in a row and \`TMUX= tmux -L ${SOCKET} has-session -t ${paths.session}\` still shows the session: run \`tmux -L ${SOCKET} capture-pane -t ${paths.session} -p | tail -30\` to see what's up — the sub-agent may have skipped a ${WATCHDOG_TOOL} call or be stuck, so keep waiting or kill-session and treat it as failed. After it returns, read ${paths.artifactPath}. If exit is non-zero or the reply is empty, read ${paths.logPath} for the sub-agent's stderr to find the root cause. If the exit file is missing or exit=0 but the deliverable is empty/missing (a silent kill or crash), read ${paths.dir}/signals.log (the sub-agent's flight recorder: external signals, crashes and exit events) to find why it died. ${exitNote}`;
 }
 
 export interface LaunchResult {
@@ -91,7 +91,13 @@ export interface LaunchResult {
 }
 
 /** Common operator commands: attach/watch, check progress, read deliverable, wait for done, kill session. Ready to copy-paste. */
-function opsCheatsheet(session: string, artifactPath: string, exitFile: string, done: string): string {
+function opsCheatsheet(
+	session: string,
+	artifactPath: string,
+	exitFile: string,
+	done: string,
+	signalsLog: string,
+): string {
 	return `# Watch the sub-agent live (recommended: /attach in the main session opens a popup — press prefix key d to leave; it only detaches and does not affect the sub-agent. The session closes itself when the task is done; read the pi session history jsonl to review the run)
 # Note: attaching nested inside your own tmux eats the prefix key first — Ctrl-b d detaches the whole tmux; to leave the inner one press the prefix twice (Ctrl-b Ctrl-b d), or just use /attach
 tmux -L pi-sub attach -t ${session}
@@ -116,6 +122,9 @@ tmux -L pi-sub wait-for ${done}
 # Exit code (0 = clean wrap-up; non-zero = failure; missing file = killed/crash)
 cat ${exitFile}
 
+# Why it died without a report: signals, crashes and exit events (flight recorder)
+cat ${signalsLog}
+
 # Kill just this sub-agent
 tmux -L pi-sub kill-session -t ${session}
 
@@ -128,7 +137,7 @@ function startedResult(paths: SubagentPaths, completion: CompletionProfile, brie
 	return {
 		ok: true,
 		text: `Sub-agent started (deliverable: ${paths.artifactPath}).${note} ${buildMainAgentNote(paths, completion.exitNote)}`,
-		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done),
+		ops: opsCheatsheet(paths.session, paths.artifactPath, paths.exitFile, paths.done, `${paths.dir}/signals.log`),
 		session: paths.session,
 		artifactPath: paths.artifactPath,
 		exitFile: paths.exitFile,

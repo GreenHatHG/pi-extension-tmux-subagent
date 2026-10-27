@@ -5,6 +5,14 @@
  * tool (or fix and re-verify). After nudgeLimit nudges for the same change set the gate stops and
  * escalates loudly to the user instead of silently passing.
  *
+ * Two loop brakes, both code (the model has no say in them):
+ * - PASS freeze: a PASS/PARTIAL verdict remembers the files it covered. Editing one of them voids
+ *   that verdict, and the gate says so once, because the classic waste is "one more nit" right
+ *   after a PASS — which scraps a clean verification and buys another full round.
+ * - FAIL streak limits: consecutive FAIL verdicts first get a triage warning (soft limit: is the
+ *   remainder part of the task, or an observation?), then stop the fix/verify loop entirely and
+ *   hand the decision to the user (hard limit).
+ *
  * WHEN the gate fires — completion order, not file order: while a watchdog drives the session, a
  * work-turn settle only means "this turn ended", not "the task is done" (the watchdog keeps the
  * model going, and a stream drop mid-task also settles). So the gate stays silent on those settles
@@ -22,6 +30,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent";
 import { resolveVerification } from "../core/config";
@@ -34,7 +43,16 @@ const ENTRY_TYPE = "verification-gate";
 type LedgerEntry =
 	| { kind: "change"; path: string; mtime: number }
 	| { kind: "verifier"; artifactPath: string; fingerprint: string }
-	| { kind: "verdict"; fingerprint: string; verdict: "PASS" | "FAIL" | "PARTIAL"; artifactPath: string }
+	| {
+			kind: "verdict";
+			fingerprint: string;
+			verdict: "PASS" | "FAIL" | "PARTIAL";
+			artifactPath: string;
+			/** Files the verdict covered (a PASS freezes them). Older entries carry no list. */
+			paths?: string[];
+	  }
+	| { kind: "freeze-warn"; path: string; fingerprint: string }
+	| { kind: "escalate"; streak: number }
 	| { kind: "nudge"; fingerprint: string; count: number };
 
 /** A pending change: path + the mtime observed when the write/edit succeeded. */
@@ -55,15 +73,46 @@ export interface GateState {
 	verifierFingerprint: string;
 	/** The pending set as it stood when the verifier was spawned (the verdict only covers this). */
 	verifierSnapshot: PendingChange[];
+	/** Files a PASS/PARTIAL verdict covered (path -> that verdict's fingerprint). */
+	frozen: Map<string, string>;
+	/** Frozen files already warned about (path -> the verdict fingerprint the warning was for). */
+	frozenWarned: Map<string, string>;
+	/** Consecutive FAIL verdicts (PASS resets it; PARTIAL neither adds nor resets). */
+	failStreak: number;
+	/** The failStreak value the gate last escalated at (0 = never). */
+	escalatedAt: number;
 }
 
 function emptyState(): GateState {
-	return { pending: [], nudges: new Map(), verifierArtifactPath: "", verifierFingerprint: "", verifierSnapshot: [] };
+	return {
+		pending: [],
+		nudges: new Map(),
+		verifierArtifactPath: "",
+		verifierFingerprint: "",
+		verifierSnapshot: [],
+		frozen: new Map(),
+		frozenWarned: new Map(),
+		failStreak: 0,
+		escalatedAt: 0,
+	};
 }
 
 /** Test-only: a fresh ledger state (the module keeps its real state private). */
 export function emptyStateForTest(): GateState {
 	return emptyState();
+}
+
+/** Wipe a ledger in place (replay starts from empty; also handy in tests). */
+export function resetState(s: GateState): void {
+	s.pending = [];
+	s.nudges.clear();
+	s.verifierArtifactPath = "";
+	s.verifierFingerprint = "";
+	s.verifierSnapshot = [];
+	s.frozen.clear();
+	s.frozenWarned.clear();
+	s.failStreak = 0;
+	s.escalatedAt = 0;
 }
 
 /**
@@ -98,17 +147,31 @@ export function applyLedger(s: GateState, entry: LedgerEntry): void {
 		// Snapshot what the verifier will see: edits made while it runs are NOT covered by its verdict.
 		s.verifierSnapshot = s.pending.map((c) => ({ ...c }));
 	} else if (entry.kind === "verdict") {
-		// FAIL is still "verified": the fix creates new changes, hence a new fingerprint, and the
-		// gate fires again for it. PASS/PARTIAL clear only the snapshot (what the verifier saw);
-		// edits made while it ran stay pending and keep the gate armed.
+		// Older entries carry no path list: fall back to what the verifier actually saw
+		const covered = entry.paths ?? s.verifierSnapshot.map((c) => c.path);
 		if (entry.verdict === "PASS" || entry.verdict === "PARTIAL") {
+			// Freeze what this verdict cleared: an edit there voids it
+			for (const path of covered) {
+				s.frozen.set(path, entry.fingerprint);
+				s.frozenWarned.delete(path);
+			}
 			const seen = new Set(s.verifierSnapshot.map((c) => `${c.path}:${c.mtime}`));
 			s.pending = s.pending.filter((c) => !seen.has(`${c.path}:${c.mtime}`));
+		}
+		// Only FAIL grows the streak: PARTIAL is neither progress nor a failed round
+		if (entry.verdict === "FAIL") s.failStreak += 1;
+		else if (entry.verdict === "PASS") {
+			s.failStreak = 0;
+			s.escalatedAt = 0;
 		}
 		s.verifierArtifactPath = "";
 		s.verifierFingerprint = "";
 		s.verifierSnapshot = [];
 		s.nudges.delete(entry.fingerprint);
+	} else if (entry.kind === "freeze-warn") {
+		s.frozenWarned.set(entry.path, entry.fingerprint);
+	} else if (entry.kind === "escalate") {
+		s.escalatedAt = entry.streak;
 	} else {
 		s.nudges.set(entry.fingerprint, entry.count);
 	}
@@ -151,6 +214,8 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 
 	/** Rebuild state from session entries on start/resume/reload. */
 	function replay(ctx: ExtensionContext): void {
+		// Start from empty: a second session_start must not double every counter
+		resetState(state);
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (entry.type === "custom" && entry.customType === ENTRY_TYPE) {
 				applyLedger(state, entry.data as LedgerEntry);
@@ -175,14 +240,25 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 			if (!isEdit && !isWrite) return;
 			const path = e.input?.path;
 			if (typeof path !== "string" || !path) return;
+			// One spelling per file: a relative path and its absolute form must not look like two files
+			const filePath = resolve(path);
 			let mtime: number;
 			try {
-				mtime = statSync(path).mtimeMs;
+				mtime = statSync(filePath).mtimeMs;
 			} catch {
 				// File gone between write and stat (deleted right after): nothing to verify for it.
 				return;
 			}
-			record({ kind: "change", path, mtime });
+			record({ kind: "change", path: filePath, mtime });
+			// A verdict that covered this file is void now: say it once, so the model stops polishing
+			const frozenAt = state.frozen.get(filePath);
+			if (!resolveVerification().enabled || !frozenAt) return;
+			if (state.frozenWarned.get(filePath) === frozenAt) return;
+			record({ kind: "freeze-warn", path: filePath, fingerprint: frozenAt });
+			pi.sendUserMessage(
+				`[verification gate] ${filePath} was covered by a PASS/PARTIAL verdict and just changed, so that verdict no longer covers it — the whole change set needs a fresh verification run. After a PASS, nits and observations belong in a TODO or in the report to the user, not in another in-place edit.`,
+				{ deliverAs: "followUp" },
+			);
 		},
 	);
 
@@ -201,6 +277,28 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 			? `You already started a verification run: read its result at ${state.verifierArtifactPath} and act on the verdict.`
 			: `Run the verification tool now with the original task and these changed files: ${paths}.`;
 
+		// Hard FAIL limit: stop the loop and let the user decide
+		if (state.failStreak >= cfg.failHardLimit) {
+			// Already escalated for this streak: stay quiet instead of quietly restarting the loop
+			if (state.escalatedAt === state.failStreak) return;
+			record({ kind: "escalate", streak: state.failStreak });
+			ctx.ui.notify(
+				`verification gate: ${state.failStreak} verification rounds FAILED in a row — automatic fix/verify loop stopped, the user decides (changes: ${paths})`,
+				"warning",
+			);
+			pi.sendUserMessage(
+				`[verification gate] The last ${state.failStreak} verification rounds came back FAIL. Stop fixing: report to the user what still fails, split it into what the original task requires vs. what is an observation, and ask how to proceed. Do not start another fix/verify round on your own.`,
+				{ deliverAs: "followUp" },
+			);
+			return;
+		}
+
+		// Soft FAIL limit: same loop, but triage before spending another round on it
+		const triage =
+			state.failStreak >= cfg.failSoftLimit
+				? ` The last ${state.failStreak} rounds came back FAIL. Triage before fixing again: does each remaining failure break the original task, or is it an observation you can record and leave? Fix only the first kind.`
+				: "";
+
 		if (spent >= cfg.nudgeLimit) {
 			// Never silently pass: at the limit the gate escalates to the user and stops nudging.
 			ctx.ui.notify(
@@ -212,7 +310,7 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 
 		record({ kind: "nudge", fingerprint, count: spent + 1 });
 		pi.sendUserMessage(
-			`[verification gate] This turn changed ${distinct} file(s) (${paths}) but nothing verified them before you settled. ${verifierNote} Do not report completion until a verifier verdict (VERDICT: PASS or PARTIAL) covers these changes. (nudge ${spent + 1}/${cfg.nudgeLimit})`,
+			`[verification gate] This turn changed ${distinct} file(s) (${paths}) but nothing verified them before you settled. ${verifierNote} Do not report completion until a verifier verdict (VERDICT: PASS or PARTIAL) covers these changes.${triage} (nudge ${spent + 1}/${cfg.nudgeLimit})`,
 			{ deliverAs: "followUp" },
 		);
 	}
@@ -286,6 +384,8 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 				fingerprint: state.verifierFingerprint || fingerprintOf(state.pending),
 				verdict,
 				artifactPath,
+				// Exactly what the verifier saw; a PASS on it freezes these files
+				paths: state.verifierSnapshot.map((c) => c.path),
 			});
 			return verdict;
 		},

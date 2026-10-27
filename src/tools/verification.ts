@@ -51,12 +51,15 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 			"Pass the original user task and the files changed. The full report is written to a system-generated path",
 			"(/tmp/pi-sub-<session>/result.md), whose exact value is given in the tool response.",
 			"Do not put the deliverable path in `question` — the brief the verifier receives already carries it",
+			"If the report is missing or empty (the verifier died silently), read the flight recorder at /tmp/pi-sub-<session>/signals.log",
+			"(signals/crashes/exit events, exact path given in the tool response) to find why the process died",
 		].join(" "),
 		promptSnippet:
 			"spawn an adversarial verifier sub-agent to independently verify non-trivial implementation before reporting done",
 		promptGuidelines: [
 			"verification: after non-trivial implementation (3+ file edits, backend/API changes, infrastructure changes), spawn this before reporting completion — your own checks do not substitute for independent verification.",
 			"verification: pass the ORIGINAL user task in `question` and the changed file paths in `context`; on FAIL, fix, then run verification again until PASS/PARTIAL.",
+			"verification: a PASS covers exactly the change set it saw. Editing those files afterwards voids it and the whole set must be verified again — after a PASS, nits and observations go to the user or a follow-up task, not into another in-place edit.",
 		],
 		parameters: Type.Object({
 			question: Type.String({

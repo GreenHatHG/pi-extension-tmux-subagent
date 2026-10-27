@@ -160,16 +160,26 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 `verification` 移植了 Claude Code 的 verification agent：一个对抗式验证子 agent，专职“把刚做完的实现弄坏”——跑 build、测试、linter、边界输入，报告必须以 `VERDICT: PASS / FAIL / PARTIAL` 结尾，每个 PASS 都必须带真实命令输出（只有阅读代码没有命令的 PASS 视为跳过，会被拒绝）。
 
+三档结论的含义写在 brief 里给验证方看：`PASS` = 原任务达成、没发现阻塞问题；`PARTIAL` = 任务达成，但有明确没覆盖到的部分或前提假设，必须在报告里写出来；`FAIL` = 任务没达成，或引入了回归、崩溃、数据丢失。**PARTIAL 不是软 FAIL**——它跟 PASS 一样放行，所以只能用来表示“验过了，但有这些限制”。验证范围之外的东西（改动之前就有的缺陷、假设性环境、没人要求的加固）统一进报告的 `## Observations (non-blocking)` 段，不许改变 VERDICT。
+
 ### 硬门：不验证不许收尾
 
-与 advisor 的“建议”不同，verification 是代码层的强制（这正是移植它要解决的问题）：开启后，只要有非平凡改动（默认 ≥ 3 个不同文件被 write/edit 成功落盘，可用配置改）在收尾时没有验证结论，门会自动注入一条 user message 强制模型先跑 `verification` 工具再报告完成（最多 `nudgeLimit` 次，默认 3；到顶后不再自动催，改为给用户发显式警告，绝不静默放行）。改动的记账来自工具执行结果（成功落盘时的 path+mtime），不来自模型自己的描述，所以模型口头上说“改完了”骗不过门；同一文件重复写入会生成新指纹，修完 FAIL 之后再验的路径也不会被误放行。账本存在会话 custom entries 里，`/reload`、resume 之后状态不丢。
+与 advisor 的“建议”不同，verification 是代码层的强制（这正是移植它要解决的问题）：开启后，只要有非平凡改动（默认 ≥ 3 个不同文件被 write/edit 成功落盘，可用配置改）在收尾时没有验证结论，门会自动注入一条 user message 强制模型先跑 `verification` 工具再报告完成（最多 `nudgeLimit` 次，默认 3；到顶后不再自动催，改为给用户发显式警告，绝不静默放行）。改动的记账来自工具执行结果（成功落盘时的 path+mtime），不来自模型自己的描述，所以模型口头上说“改完了”骗不过门；同一文件重复写入会生成新指纹，修完 FAIL 之后再验的路径也不会被误放行。路径统一先过 `resolve()`，所以同一个文件写成相对路径还是绝对路径都算同一个文件。账本存在会话 custom entries 里，`/reload`、resume 之后状态不丢（重放前先清空，不会因为重复的 `session_start` 翻倍）。
 
 **触发时机跟 watchdog 协调（完成顺序，不是文件顺序）**：watchdog 在跑时，`agent_settled` 只说明「这一轮结束了」，不说明「任务做完了」（watchdog 会继续催，断流也会 settle）。所以门在 watchdog 活跃时对普通 settle 保持沉默，只认 watchdog 的 done 信号（`watchdog_decide` 收尾，pi-watchdog 发出的 `watchdog:stopped`，常驻模式打盹也发）之后的那个 settle，在那时刻才催验证；没有 watchdog（或已停/额度用完）时退回「settle 即完成」的旧行为兜底。这样断流恢复永远由 watchdog 负责，验证只发生在活真正干完之后。verifier 子 agent 侧同样按完成顺序记账：主会话的轮询等 exit 文件出现（收尾真跑完）才从 result.md 读 verdict，避免把断流后即将被改写的半截报告当成结论。
 
 开关与命令：
 
-- `/verification` 面板式开关（写在 `~/.pi/agent/subagent_advisor.json` 的 `verification` section：`{ "enabled": true, "nudgeLimit": 3, "minChangedFiles": 3 }`），**立即生效**（门在决策时现读配置，不像 advisor 的开关要重启），页脚常驻显示当前状态。
+- `/verification` 面板式开关，**立即生效**（门在决策时现读配置，不像 advisor 的开关要重启），页脚常驻显示当前状态。
 - 默认关闭：工具照常注册，模型可以主动调用，但门不拦截。
+
+### 三道刹车：别让「改一版 → 验一轮 → 又 FAIL」无限转
+
+验证子 agent 的默认人设是「把刚做完的弄坏」，再加上没有范围限制，很容易挖出永远修不完的边角问题。实测过一场 3 小时的会话：9 轮验证、112 分钟在等验证子 agent，最后卡在「已经 PASS 了又去改一个 observation」。所以门里加了三道代码级的刹车，模型说什么都不算数：
+
+- **验证 brief 自带范围闸**：只验原任务 + 本次改动引入的回归；改动之前就有的缺陷、假设性环境（老版本工具、诡异文件系统、并发会话）、没人要求的加固，一律写进报告里固定的 `## Observations (non-blocking)` 段，**不许改变 VERDICT**。判 FAIL 必须点名它破坏了原任务的哪一条。
+- **PASS 冻结**：PASS/PARTIAL 的结果会记住它覆盖了哪些文件（verdict 条目里的 `paths`）。之后再动这些文件，那份结论当场失效，门会提醒一次（同一文件同一份结论只提醒一次，记账在 `freeze-warn` 条目里，reload 不会重复），因为「刚 PASS 顺手再改一个 nit」是最亏的操作——一次干净的验证被作废，还得再等一整轮。
+- **连续 FAIL 双阈值**：`failStreak` 记连续 FAIL 轮数（FAIL +1，PASS 归零，PARTIAL 不加不减）。到 `failSoftLimit`（默认 2）时，正常催验消息后面追加一段分流提示：剩下的失败到底破坏了原任务，还是可以记成 observation 就算了。到 `failHardLimit`（默认 4，且不会低于软限）时不再催，改为给用户发警告 + 让模型停手汇报（哪些没过、哪些是 observation、请用户决定）。只要还在连续失败，每多一轮 FAIL 都会再升级一次——只有 PASS 能解除，这样模型不理警告也躲不过下一次。
 
 验证子 agent 的工具白名单是 `read` / `bash` / `write` / `edit`（+ watchdog 路径的 `watchdog_decide`）。write/edit 会经 write-fence 拦住：verifier 只能写到交付文件本身（result.md 路径），写别的地方会被 block，算是把“不许改项目”从只靠 prompt 约束升级成了硬防线。**残余风险**：verifier 要跑 build/test，所以 bash 不能像 advisor 那样收只读（build 产物要写盘），verifier 用 bash 重定向写项目文件没有防线——这与 Claude Code 原版一致（原版同样只靠 prompt 约束 bash）。如果后续给 pi-extension-bash-guard 加一个 verifier 档位（允许 build/test/写 /tmp、拦项目目录写），这里接入即可。
 
