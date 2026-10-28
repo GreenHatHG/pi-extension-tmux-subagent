@@ -4,12 +4,12 @@
  * at decision time, so on/off applies immediately to the next settle.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readVerificationFileConfig, writeVerificationConfig } from "../core/config";
+import { resolveVerification, writeVerificationConfig } from "../core/config";
 import { onEvent } from "../registry";
 
-/** Repaint the footer status from the config file (single source of truth). */
+/** Repaint the footer status from the resolved settings (config plus the on-by-default rule). */
 function paintStatus(ctx: ExtensionContext): void {
-	const enabled = readVerificationFileConfig().enabled === true;
+	const enabled = resolveVerification().enabled;
 	const theme = ctx.ui.theme;
 	try {
 		ctx.ui.setStatus(
@@ -26,7 +26,7 @@ export function setupVerificationSettings(pi: ExtensionAPI): void {
 	pi.registerCommand("verification", {
 		description: "Toggle the verification gate: unverified non-trivial changes block completion (applies immediately)",
 		handler: async (_args, ctx) => {
-			const next = readVerificationFileConfig().enabled !== true;
+			const next = !resolveVerification().enabled;
 			try {
 				writeVerificationConfig({ enabled: next });
 			} catch (err) {

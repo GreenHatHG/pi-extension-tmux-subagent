@@ -60,6 +60,7 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 			"verification: after non-trivial implementation (3+ file edits, backend/API changes, infrastructure changes), spawn this before reporting completion — your own checks do not substitute for independent verification.",
 			"verification: pass the ORIGINAL user task in `question` and the changed file paths in `context`; on FAIL, fix, then run verification again until PASS/PARTIAL.",
 			"verification: a PASS covers exactly the change set it saw. Editing those files afterwards voids it and the whole set must be verified again — after a PASS, nits and observations go to the user or a follow-up task, not into another in-place edit.",
+			"verification: after several consecutive FAIL rounds this tool refuses to start another one and tells you to report to the user. That is not an error to work around — report what still fails and ask.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
@@ -73,6 +74,14 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// Brake first: a fix/verify loop can run without ever settling (each round blocks inside
+			// bash waiting for the verifier), so the settle-driven nudge alone never sees it.
+			const brake = gate.brakeBeforeSpawn();
+			if (brake.blocked) {
+				if (brake.warning) ctx.ui.notify(brake.warning, "warning");
+				return startedToolResult(brake.message ?? "Verification blocked.");
+			}
+
 			// Append the gate's pending-file list so the verifier sees the fact, not the model's claim
 			const pendingPaths = [...new Set(gate.state.pending.map((c) => c.path))];
 			const context =
@@ -89,7 +98,7 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 				showSubagentBrief(pi, r, verificationMode.display);
 				watchSubagentReply(pi, r, verificationMode.display);
 			}
-			return startedToolResult(r.text, r.ops);
+			return startedToolResult(brake.triage ? `${r.text}\n\n[verification] ${brake.triage}` : r.text, r.ops);
 		},
 		renderResult(result, _options, theme, _context) {
 			return renderResultWithOps(result, "Verifier started (copy into any terminal to watch):", theme);

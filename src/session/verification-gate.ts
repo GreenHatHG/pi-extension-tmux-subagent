@@ -11,7 +11,9 @@
  *   after a PASS — which scraps a clean verification and buys another full round.
  * - FAIL streak limits: consecutive FAIL verdicts first get a triage warning (soft limit: is the
  *   remainder part of the task, or an observation?), then stop the fix/verify loop entirely and
- *   hand the decision to the user (hard limit).
+ *   hand the decision to the user (hard limit). The hard limit is enforced twice: on the settle
+ *   nudge below, and at the verification tool's spawn (see brakeBeforeSpawn) — a round can start
+ *   without the session ever settling, which is how a loop escapes a settle-only brake.
  *
  * WHEN the gate fires — completion order, not file order: while a watchdog drives the session, a
  * work-turn settle only means "this turn ended", not "the task is done" (the watchdog keeps the
@@ -33,11 +35,18 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isEditToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent";
-import { resolveVerification } from "../core/config";
+import { FAIL_HARD_LIMIT, FAIL_SOFT_LIMIT, resolveVerification } from "../core/config";
 import { onEvent } from "../registry";
 
 /** customType for this gate's session entries. */
 const ENTRY_TYPE = "verification-gate";
+
+/**
+ * Every message this gate injects starts with this, so the transcript shows what came from the
+ * gate and not from the user. (Telling human input apart uses the `input` event's source, not
+ * this prefix.)
+ */
+const GATE_PREFIX = "[verification gate]";
 
 /** One line in the gate's ledger, persisted as a custom entry. */
 type LedgerEntry =
@@ -53,7 +62,9 @@ type LedgerEntry =
 	  }
 	| { kind: "freeze-warn"; path: string; fingerprint: string }
 	| { kind: "escalate"; streak: number }
-	| { kind: "nudge"; fingerprint: string; count: number };
+	| { kind: "nudge"; fingerprint: string; count: number }
+	/** A human input restarted the FAIL budget. */
+	| { kind: "grant" };
 
 /** A pending change: path + the mtime observed when the write/edit succeeded. */
 interface PendingChange {
@@ -130,6 +141,11 @@ function distinctFileCount(pending: PendingChange[]): number {
 	return new Set(pending.map((c) => c.path)).size;
 }
 
+/** The "triage before fixing again" note, shared by the settle nudge and the tool-entry brake. */
+function triageNote(streak: number): string {
+	return `The last ${streak} rounds came back FAIL. Triage before fixing again: does each remaining failure break the original task, or is it an observation you can record and leave? Fix only the first kind.`;
+}
+
 /** Parse the verdict line out of a verifier report (last `VERDICT: X` line wins). */
 export function parseVerdict(report: string): "PASS" | "FAIL" | "PARTIAL" | undefined {
 	const matches = [...report.matchAll(/^VERDICT:\s*(PASS|FAIL|PARTIAL)\s*$/gm)];
@@ -172,14 +188,36 @@ export function applyLedger(s: GateState, entry: LedgerEntry): void {
 		s.frozenWarned.set(entry.path, entry.fingerprint);
 	} else if (entry.kind === "escalate") {
 		s.escalatedAt = entry.streak;
+	} else if (entry.kind === "grant") {
+		// A human input is a new budget: the loop may start over on purpose
+		s.failStreak = 0;
+		s.escalatedAt = 0;
 	} else {
 		s.nudges.set(entry.fingerprint, entry.count);
 	}
 }
 
+/** Verdict of the tool-entry brake: start this round, or refuse and hand it to the user. */
+export interface SpawnBrake {
+	blocked: boolean;
+	/** When blocked: the text to return as the tool result. */
+	message?: string;
+	/** When blocked and the user was warned just now (once per streak): the warning line. */
+	warning?: string;
+	/** When open and the FAIL streak passed the soft limit: note to hand to the model. */
+	triage?: string;
+}
+
 export interface VerificationGate {
 	/** The live ledger (for the tool to read, e.g. to list pending files). */
 	readonly state: GateState;
+	/**
+	 * Brake at the one place a verification round can start. The settle-driven nudge cannot see a
+	 * loop that never settles (blocking inside bash for 20 minutes, fix, next round): the FAIL
+	 * streak is therefore also checked here. A human input restarts the budget, so the brake is
+	 * not a dead end.
+	 */
+	brakeBeforeSpawn(): SpawnBrake;
 	/** Mark the current pending set as covered by a running verifier (called by the tool). */
 	recordVerifierStarted(artifactPath: string): void;
 	/**
@@ -278,7 +316,7 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 			: `Run the verification tool now with the original task and these changed files: ${paths}.`;
 
 		// Hard FAIL limit: stop the loop and let the user decide
-		if (state.failStreak >= cfg.failHardLimit) {
+		if (state.failStreak >= FAIL_HARD_LIMIT) {
 			// Already escalated for this streak: stay quiet instead of quietly restarting the loop
 			if (state.escalatedAt === state.failStreak) return;
 			record({ kind: "escalate", streak: state.failStreak });
@@ -294,10 +332,7 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 		}
 
 		// Soft FAIL limit: same loop, but triage before spending another round on it
-		const triage =
-			state.failStreak >= cfg.failSoftLimit
-				? ` The last ${state.failStreak} rounds came back FAIL. Triage before fixing again: does each remaining failure break the original task, or is it an observation you can record and leave? Fix only the first kind.`
-				: "";
+		const triage = state.failStreak >= FAIL_SOFT_LIMIT ? ` ${triageNote(state.failStreak)}` : "";
 
 		if (spent >= cfg.nudgeLimit) {
 			// Never silently pass: at the limit the gate escalates to the user and stops nudging.
@@ -349,6 +384,24 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 		},
 	);
 
+	// The brake's escape hatch: real human input (typed in the TUI, or sent by a remote client)
+	// restarts the FAIL budget. pi tags the source, so an extension injecting a user message —
+	// this gate's own nudge, the watchdog, goal-mode's "keep going" — can never be mistaken for
+	// the user deciding, and an injection landing after the human's word cannot swallow it.
+	onEvent(
+		pi,
+		"input",
+		{
+			where: "session/verification-gate.ts:grant",
+			note: "Human input restarts the FAIL budget so the tool-entry brake is never a dead end (extension-sourced input is ignored)",
+		},
+		(event: unknown) => {
+			const e = event as { source?: string } | undefined;
+			if (e?.source === "extension") return;
+			record({ kind: "grant" });
+		},
+	);
+
 	onEvent(
 		pi,
 		"session_start",
@@ -366,6 +419,23 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 
 	return {
 		state,
+		brakeBeforeSpawn(): SpawnBrake {
+			if (state.failStreak < FAIL_HARD_LIMIT) {
+				return state.failStreak >= FAIL_SOFT_LIMIT
+					? { blocked: false, triage: triageNote(state.failStreak) }
+					: { blocked: false };
+			}
+
+			const escalated = state.escalatedAt !== state.failStreak;
+			if (escalated) record({ kind: "escalate", streak: state.failStreak });
+			return {
+				blocked: true,
+				message: `${GATE_PREFIX} Not starting another verification round: the last ${state.failStreak} rounds came back FAIL (hard limit ${FAIL_HARD_LIMIT}). Stop fixing. Report to the user what still fails, split it into what the original task requires vs. what is an observation, and ask how to proceed. The brake lifts on the next reply from the user.`,
+				warning: escalated
+					? `verification: ${state.failStreak} rounds FAILED in a row — refusing to start another verifier, the user decides`
+					: undefined,
+			};
+		},
 		recordVerifierStarted(artifactPath: string): void {
 			record({ kind: "verifier", artifactPath, fingerprint: fingerprintOf(state.pending) });
 		},

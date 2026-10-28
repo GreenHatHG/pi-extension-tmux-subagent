@@ -27,16 +27,12 @@ export interface AdvisorFileConfig {
 
 /** verification section fields in subagent_advisor.json (unknown keys are kept on write). */
 export interface VerificationFileConfig {
-	/** Hard gate on/off: when on, unverified non-trivial changes block completion (nudge turns). */
+	/** Off only when explicitly false; with no config at all the gate is on. */
 	enabled?: boolean;
 	/** Max nudges per change fingerprint before the gate stops and escalates to the user. */
 	nudgeLimit?: number;
 	/** Changed-file count above which the gate fires (claude-code's non-trivial threshold). */
 	minChangedFiles?: number;
-	/** Consecutive FAIL verdicts after which the nudge carries a triage warning (soft limit). */
-	failSoftLimit?: number;
-	/** Consecutive FAIL verdicts after which the gate stops the fix/verify loop and hands it to the user. */
-	failHardLimit?: number;
 	[key: string]: unknown;
 }
 
@@ -78,37 +74,38 @@ export function readVerificationFileConfig(): VerificationFileConfig {
 	return readConfig().verification ?? {};
 }
 
-/** Defaults applied on top of the verification section (enabled: false = soft contract only). */
+/** Defaults applied on top of the verification section (on unless explicitly turned off). */
 export interface VerificationSettings {
 	enabled: boolean;
 	nudgeLimit: number;
 	minChangedFiles: number;
-	/** Soft FAIL-round limit: from here on the nudge asks the model to triage before fixing again. */
-	failSoftLimit: number;
-	/** Hard FAIL-round limit: from here on the gate stops the loop and escalates to the user. */
-	failHardLimit: number;
 }
+
+/**
+ * Consecutive FAIL rounds are a brake, not a preference: the thresholds are fixed in code so a
+ * session cannot tune its own way out of the loop brake.
+ * - soft: from here the nudge and the tool result ask for triage instead of another blind fix
+ * - hard: from here the verification tool refuses to start another round and hands it to the user
+ */
+export const FAIL_SOFT_LIMIT = 2;
+export const FAIL_HARD_LIMIT = 4;
 
 const positiveInt = (v: unknown, fallback: number): number =>
 	typeof v === "number" && v > 0 ? Math.floor(v) : fallback;
 
 export function resolveVerification(): VerificationSettings {
 	const v = readVerificationFileConfig();
-	const failSoftLimit = positiveInt(v.failSoftLimit, 2);
-	// Hard can never sit below soft, or the warning tier would be dead code
-	const failHardLimit = Math.max(failSoftLimit, positiveInt(v.failHardLimit, 4));
 	return {
-		enabled: v.enabled === true,
+		// On by default: a guard you have to switch on protects nobody
+		enabled: v.enabled !== false,
 		nudgeLimit: positiveInt(v.nudgeLimit, 3),
 		minChangedFiles: positiveInt(v.minChangedFiles, 3),
-		failSoftLimit,
-		failHardLimit,
 	};
 }
 
 /**
  * Write verification config back (read-modify-write, keeps unknown keys). Only the on/off switch is
- * user-facing for now; limits stay hand-edited in the JSON.
+ * user-facing; the FAIL brakes are fixed in code.
  */
 export function writeVerificationConfig(patch: { enabled?: boolean }): void {
 	const path = advisorConfigPath();

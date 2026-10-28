@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { FAIL_HARD_LIMIT } from "../src/core/config";
 import { setupVerificationGate, type VerificationGate } from "../src/session/verification-gate";
 
 let tmpDirs: string[] = [];
@@ -161,6 +162,27 @@ describe("verification gate × watchdog coordination", () => {
 		expect(rt.sent).toHaveLength(1);
 	});
 
+	test("no verification config at all: the gate is on and demands verification", async () => {
+		writeFileSync(
+			join(tmpDirs[0], "subagent_advisor.json"),
+			JSON.stringify({ verification: { minChangedFiles: 1, nudgeLimit: 1 } }),
+		);
+		const rt = mockPi();
+		setupVerificationGate(rt.pi);
+		await rt.change();
+		await rt.settle();
+		expect(rt.sent).toHaveLength(1);
+	});
+
+	test("an explicit enabled:false turns the gate off", async () => {
+		writeFileSync(join(tmpDirs[0], "subagent_advisor.json"), JSON.stringify({ verification: { enabled: false } }));
+		const rt = mockPi();
+		setupVerificationGate(rt.pi);
+		await rt.change();
+		await rt.settle();
+		expect(rt.sent).toHaveLength(0);
+	});
+
 	test("at the nudge limit the gate escalates to the user instead of nudging", async () => {
 		const rt = mockPi();
 		setupVerificationGate(rt.pi);
@@ -222,14 +244,12 @@ describe("verification gate × loop brakes", () => {
 	test("the hard FAIL limit stops the loop and tells the model to report to the user", async () => {
 		writeFileSync(
 			join(tmpDirs[0], "subagent_advisor.json"),
-			JSON.stringify({
-				verification: { enabled: true, minChangedFiles: 1, nudgeLimit: 9, failSoftLimit: 1, failHardLimit: 1 },
-			}),
+			JSON.stringify({ verification: { enabled: true, minChangedFiles: 1, nudgeLimit: 9 } }),
 		);
 		const rt = mockPi();
 		const gate = setupVerificationGate(rt.pi);
 		await rt.change();
-		recordRound(gate, "FAIL");
+		for (let i = 0; i < FAIL_HARD_LIMIT; i++) recordRound(gate, "FAIL");
 		await rt.settle();
 		expect(rt.sent.at(-1)?.text).toContain("Stop fixing");
 		expect(rt.warnings.some((w) => w.includes("FAILED in a row"))).toBe(true);

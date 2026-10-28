@@ -156,7 +156,7 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 主会话默认不带任何联网工具，一切搜索/抓取都走 `web_research`（工具 guideline 强导向），防止原始网页内容进入主会话上下文。任务模式的 `spawn_sub` 子 agent 不注入引导变量，保持无网；任务中途要搜的活儿由主会话拆给 `web_research`。
 
-## verification（硬门，默认关闭）
+## verification（硬门，默认开启）
 
 `verification` 移植了 Claude Code 的 verification agent：一个对抗式验证子 agent，专职“把刚做完的实现弄坏”——跑 build、测试、linter、边界输入，报告必须以 `VERDICT: PASS / FAIL / PARTIAL` 结尾，每个 PASS 都必须带真实命令输出（只有阅读代码没有命令的 PASS 视为跳过，会被拒绝）。
 
@@ -171,15 +171,18 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 开关与命令：
 
 - `/verification` 面板式开关，**立即生效**（门在决策时现读配置，不像 advisor 的开关要重启），页脚常驻显示当前状态。
-- 默认关闭：工具照常注册，模型可以主动调用，但门不拦截。
+- **默认开启**：不需要任何配置，`~/.pi/agent/subagent_advisor.json` 里没有 `verification` 段也照样拦截。只有显式写 `"enabled": false`（或用 `/verification` 关掉）才停用。
 
-### 三道刹车：别让「改一版 → 验一轮 → 又 FAIL」无限转
+### 四道刹车：别让「改一版 → 验一轮 → 又 FAIL」无限转
 
-验证子 agent 的默认人设是「把刚做完的弄坏」，再加上没有范围限制，很容易挖出永远修不完的边角问题。实测过一场 3 小时的会话：9 轮验证、112 分钟在等验证子 agent，最后卡在「已经 PASS 了又去改一个 observation」。所以门里加了三道代码级的刹车，模型说什么都不算数：
+验证子 agent 的默认人设是「把刚做完的弄坏」，再加上没有范围限制，很容易挖出永远修不完的边角问题。实测过一场 3 小时的会话：9 轮验证、112 分钟在等验证子 agent，最后卡在「已经 PASS 了又去改一个 observation」。所以门里加了四道代码级的刹车，模型说什么都不算数：
 
 - **验证 brief 自带范围闸**：只验原任务 + 本次改动引入的回归；改动之前就有的缺陷、假设性环境（老版本工具、诡异文件系统、并发会话）、没人要求的加固，一律写进报告里固定的 `## Observations (non-blocking)` 段，**不许改变 VERDICT**。判 FAIL 必须点名它破坏了原任务的哪一条。
 - **PASS 冻结**：PASS/PARTIAL 的结果会记住它覆盖了哪些文件（verdict 条目里的 `paths`）。之后再动这些文件，那份结论当场失效，门会提醒一次（同一文件同一份结论只提醒一次，记账在 `freeze-warn` 条目里，reload 不会重复），因为「刚 PASS 顺手再改一个 nit」是最亏的操作——一次干净的验证被作废，还得再等一整轮。
-- **连续 FAIL 双阈值**：`failStreak` 记连续 FAIL 轮数（FAIL +1，PASS 归零，PARTIAL 不加不减）。到 `failSoftLimit`（默认 2）时，正常催验消息后面追加一段分流提示：剩下的失败到底破坏了原任务，还是可以记成 observation 就算了。到 `failHardLimit`（默认 4，且不会低于软限）时不再催，改为给用户发警告 + 让模型停手汇报（哪些没过、哪些是 observation、请用户决定）。只要还在连续失败，每多一轮 FAIL 都会再升级一次——只有 PASS 能解除，这样模型不理警告也躲不过下一次。
+- **连续 FAIL 双阈值**：`failStreak` 记连续 FAIL 轮数（FAIL +1，PASS 归零，PARTIAL 不加不减）。到 2 轮（`FAIL_SOFT_LIMIT`）时，正常催验消息后面追加一段分流提示：剩下的失败到底破坏了原任务，还是可以记成 observation 就算了。到 4 轮（`FAIL_HARD_LIMIT`）时不再催，改为给用户发警告 + 让模型停手汇报（哪些没过、哪些是 observation、请用户决定）。只要还在连续失败，每多一轮 FAIL 都会再升级一次——PASS 或用户回一句话才能解除，这样模型不理警告也躲不过下一次。两个阈值写死在 `src/core/config.ts` 里，**不读配置文件**：刹车要是能靠改配置绕开，就等于没有。
+- **工具入口刹车**：上面三道都挂在 `agent_settled` 上，可循环也可以完全不 settle——每轮在 bash 里阻塞 15 分钟等 verifier，改完直接开下一轮，从头到尾没有一刻是「这一轮结束了」。实测那场 4 小时的会话就是这样连了 9 轮 FAIL，而当时门甚至是关着的。所以 `verification` 工具在 spawn 之前也查一次 `failStreak`：到 `FAIL_HARD_LIMIT` 直接不启动，把「停手、向用户汇报、哪些算 observation」作为工具结果返回（不依赖 `enabled`，关着门也刹得住）。
+
+刹车的逃生口是用户本人：pi 的 `input` 事件带来源标记（`interactive` / `rpc` / `extension`），只有不是 `extension` 的那才记成 `grant` 条目——`failStreak` 清零、预算重开，被自己的门卡死这种事不会发生。用来源标记而不是猜消息内容，是因为别的扩展也会往主会话里 `sendUserMessage`（goal-mode 的续跑、watchdog、本门自己的催验和 freeze 警告），那些都不算“用户决定”，也不会因为多插一条就把用户刚才的授权顶掉。
 
 验证子 agent 的工具白名单是 `read` / `bash` / `write` / `edit`（+ watchdog 路径的 `watchdog_decide`）。write/edit 会经 write-fence 拦住：verifier 只能写到交付文件本身（result.md 路径），写别的地方会被 block，算是把“不许改项目”从只靠 prompt 约束升级成了硬防线。**残余风险**：verifier 要跑 build/test，所以 bash 不能像 advisor 那样收只读（build 产物要写盘），verifier 用 bash 重定向写项目文件没有防线——这与 Claude Code 原版一致（原版同样只靠 prompt 约束 bash）。如果后续给 pi-extension-bash-guard 加一个 verifier 档位（允许 build/test/写 /tmp、拦项目目录写），这里接入即可。
 
