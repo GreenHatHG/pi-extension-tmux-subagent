@@ -58,9 +58,9 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 			"spawn an adversarial verifier sub-agent to independently verify non-trivial implementation before reporting done",
 		promptGuidelines: [
 			"verification: after non-trivial implementation (3+ file edits, backend/API changes, infrastructure changes), spawn this before reporting completion — your own checks do not substitute for independent verification.",
-			"verification: pass the ORIGINAL user task in `question` and the changed file paths in `context`; on FAIL, fix, then run verification again until PASS/PARTIAL.",
-			"verification: a PASS covers exactly the change set it saw. Editing those files afterwards voids it and the whole set must be verified again — after a PASS, nits and observations go to the user or a follow-up task, not into another in-place edit.",
-			"verification: after several consecutive FAIL rounds this tool refuses to start another one and tells you to report to the user. That is not an error to work around — report what still fails and ask.",
+			"verification: pass the ORIGINAL user task in `question` and the changed file paths in `context`. On FAIL, fix, then run it again.",
+			"verification: one user reply buys 3 rounds (edit -> verify -> edit -> verify -> edit -> verify). After the third round edits and rounds are refused: report to the user what is verified and what is not. A PASS lets you stop early, or use a remaining round on a real fix — never on polish.",
+			"verification: a round on an unchanged tree is refused — a verdict for bytes nobody touched proves nothing. So is wrapping up while files are unverified.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
@@ -74,13 +74,10 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			// Brake first: a fix/verify loop can run without ever settling (each round blocks inside
-			// bash waiting for the verifier), so the settle-driven nudge alone never sees it.
-			const brake = gate.brakeBeforeSpawn();
-			if (brake.blocked) {
-				if (brake.warning) ctx.ui.notify(brake.warning, "warning");
-				return startedToolResult(brake.message ?? "Verification blocked.");
-			}
+			// The tool_call brake blocks this before execute; repeat the check here so the round budget
+			// holds even when a caller reaches the tool another way.
+			const refusal = gate.refusalToVerify();
+			if (refusal) return startedToolResult(refusal);
 
 			// Append the gate's pending-file list so the verifier sees the fact, not the model's claim
 			const pendingPaths = [...new Set(gate.state.pending.map((c) => c.path))];
@@ -88,6 +85,12 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 				pendingPaths.length > 0
 					? `${params.context ? `${params.context}\n` : ""}Changed files: ${pendingPaths.join(", ")}`
 					: params.context;
+			// Writes through bash are invisible to the ledger: say so instead of letting the model read
+			// a PASS on an unrecorded change set as coverage.
+			const uncovered =
+				pendingPaths.length === 0
+					? "\n\n[verification] No write/edit was recorded in this burst, so this verdict cannot clear the gate. Changes made through bash are invisible to it."
+					: "";
 			const r = await launch(params.question, context, undefined, ctx.sessionManager.getSessionId());
 			if (r.ok) {
 				if (r.artifactPath && r.exitFile) {
@@ -98,7 +101,7 @@ export function setupVerification(pi: ExtensionAPI, gate: VerificationGate, laun
 				showSubagentBrief(pi, r, verificationMode.display);
 				watchSubagentReply(pi, r, verificationMode.display);
 			}
-			return startedToolResult(brake.triage ? `${r.text}\n\n[verification] ${brake.triage}` : r.text, r.ops);
+			return startedToolResult(`${r.text}${uncovered}`, r.ops);
 		},
 		renderResult(result, _options, theme, _context) {
 			return renderResultWithOps(result, "Verifier started (copy into any terminal to watch):", theme);

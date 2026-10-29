@@ -29,8 +29,6 @@ export interface AdvisorFileConfig {
 export interface VerificationFileConfig {
 	/** Off only when explicitly false; with no config at all the gate is on. */
 	enabled?: boolean;
-	/** Max nudges per change fingerprint before the gate stops and escalates to the user. */
-	nudgeLimit?: number;
 	/** Changed-file count above which the gate fires (claude-code's non-trivial threshold). */
 	minChangedFiles?: number;
 	[key: string]: unknown;
@@ -77,18 +75,18 @@ export function readVerificationFileConfig(): VerificationFileConfig {
 /** Defaults applied on top of the verification section (on unless explicitly turned off). */
 export interface VerificationSettings {
 	enabled: boolean;
-	nudgeLimit: number;
 	minChangedFiles: number;
 }
 
 /**
- * Consecutive FAIL rounds are a brake, not a preference: the thresholds are fixed in code so a
- * session cannot tune its own way out of the loop brake.
- * - soft: from here the nudge and the tool result ask for triage instead of another blind fix
- * - hard: from here the verification tool refuses to start another round and hands it to the user
+ * Verification rounds one human reply buys. Fixed in code, not config: a brake you can tune away in
+ * the same JSON is not a brake. After the last round edits and rounds are refused until the user
+ * replies again (edit -> verify -> edit -> verify -> edit -> verify, then stop).
  */
+export const ROUND_LIMIT = 3;
+
+/** From this many consecutive FAILs the round asks for triage instead of another blind fix. */
 export const FAIL_SOFT_LIMIT = 2;
-export const FAIL_HARD_LIMIT = 4;
 
 const positiveInt = (v: unknown, fallback: number): number =>
 	typeof v === "number" && v > 0 ? Math.floor(v) : fallback;
@@ -98,7 +96,6 @@ export function resolveVerification(): VerificationSettings {
 	return {
 		// On by default: a guard you have to switch on protects nobody
 		enabled: v.enabled !== false,
-		nudgeLimit: positiveInt(v.nudgeLimit, 3),
 		minChangedFiles: positiveInt(v.minChangedFiles, 3),
 	};
 }

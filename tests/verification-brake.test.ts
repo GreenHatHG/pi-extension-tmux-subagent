@@ -1,41 +1,33 @@
 /**
- * Tool-entry brake: the verification tool itself must refuse to start another round once the
- * consecutive-FAIL streak hits the hard limit, even with the gate switched off and even when the
- * session never settles (the incident: 9 FAIL rounds over 3 hours, all started from tool calls
- * while the model blocked inside bash waiting for each verifier).
+ * Round budget at the tool entry: the verification tool itself refuses to start round N+1, even
+ * with the gate switched off and even when the session never settles. The incident: 9 FAIL rounds
+ * over three hours, every one of them started from a tool call while the model blocked inside bash
+ * waiting for the previous verifier, so no settle ever fired.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { FAIL_HARD_LIMIT } from "../src/core/config";
+import { ROUND_LIMIT } from "../src/core/config";
 import { setupVerificationGate, type VerificationGate } from "../src/session/verification-gate";
 import { setupVerification } from "../src/tools/verification";
+import { type GateEnv, useGateEnv } from "./gate-env";
 
-let dirs: string[] = [];
-const oldEnvDir = process.env.PI_CODING_AGENT_DIR;
+let env: GateEnv;
 
 beforeEach(() => {
-	const dir = mkdtempSync(join(tmpdir(), "vbrake-"));
-	dirs.push(dir);
 	// Gate switched OFF on purpose: the observed loop ran with the gate disabled, so the brake
 	// must not depend on it.
-	writeFileSync(join(dir, "subagent_advisor.json"), JSON.stringify({ verification: { enabled: false } }));
-	process.env.PI_CODING_AGENT_DIR = dir;
+	env = useGateEnv({ verification: { enabled: false } });
 });
 
 afterEach(() => {
-	if (oldEnvDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-	else process.env.PI_CODING_AGENT_DIR = oldEnvDir;
-	for (const d of dirs) rmSync(d, { recursive: true, force: true });
-	dirs = [];
+	env.restore();
 });
 
 function harness() {
 	const entries: Record<string, unknown>[] = [];
 	const tools = new Map<string, { execute: (...a: unknown[]) => Promise<{ content: { text?: string }[] }> }>();
-	const warnings: string[] = [];
 	const lifecycle = new Map<string, ((...a: unknown[]) => unknown)[]>();
 	const pi = {
 		on: (event: string, handler: (...a: unknown[]) => unknown) => {
@@ -52,11 +44,7 @@ function harness() {
 		) => tools.set(def.name, def),
 	} as unknown as ExtensionAPI;
 	const ctx = {
-		ui: {
-			notify: (m: string, level?: string) => {
-				if (level === "warning") warnings.push(m);
-			},
-		},
+		ui: { notify: () => {} },
 		isIdle: () => true,
 		sessionManager: { getEntries: () => entries, getSessionId: () => "sess" },
 	} as unknown as ExtensionContext;
@@ -73,38 +61,36 @@ function harness() {
 	const input = (source: string) => {
 		for (const h of lifecycle.get("input") ?? []) h({ type: "input", text: "go", source });
 	};
-	return { gate, tool, entries, warnings, input, launched: () => launched, ctx };
+	return { gate, tool, input, launched: () => launched, ctx };
 }
-
-const verdictFail = "FAIL" as const;
 
 /** One verifier round: register the artifact, write a report, let the gate read the verdict. */
 function round(gate: VerificationGate, verdict: "PASS" | "FAIL"): void {
-	const artifact = join(dirs[0], `report-${Math.random().toString(36).slice(2)}.md`);
+	const artifact = join(env.dir, `report-${Math.random().toString(36).slice(2)}.md`);
 	gate.recordVerifierStarted(artifact);
 	writeFileSync(artifact, `# report\n\nVERDICT: ${verdict}\n`);
 	gate.recordVerdictFromReport();
 }
 
-/** Spend the full FAIL budget so the brake is closed. */
-function failBudget(gate: VerificationGate): void {
-	for (let i = 0; i < FAIL_HARD_LIMIT; i++) round(gate, verdictFail);
+/** Spend the whole round budget. */
+function spendBudget(gate: VerificationGate): void {
+	for (let i = 0; i < ROUND_LIMIT; i++) round(gate, "FAIL");
 }
 
-describe("verification tool × FAIL brake", () => {
-	test("at the hard FAIL limit the tool refuses to spawn another verifier", async () => {
+describe("verification tool × round budget", () => {
+	test("at the round limit the tool refuses to spawn another verifier", async () => {
 		const rt = harness();
-		failBudget(rt.gate);
+		spendBudget(rt.gate);
 
 		const res = await rt.tool.execute("c1", { question: "original task" }, undefined, undefined, rt.ctx);
 
 		expect(rt.launched()).toBe(0);
-		expect(res.content[0]?.text).toContain("Not starting another verification round");
+		expect(res.content[0]?.text).toContain("already used its");
 	});
 
-	test("human input lifts the brake and restarts the budget", async () => {
+	test("human input refills the budget", async () => {
 		const rt = harness();
-		failBudget(rt.gate);
+		spendBudget(rt.gate);
 		rt.input("interactive");
 
 		await rt.tool.execute("c1", { question: "original task" }, undefined, undefined, rt.ctx);
@@ -112,37 +98,35 @@ describe("verification tool × FAIL brake", () => {
 		expect(rt.launched()).toBe(1);
 	});
 
-	test("an extension-injected message does not count as the user deciding", async () => {
+	test("an extension-injected message does not refill it", async () => {
 		const rt = harness();
-		failBudget(rt.gate);
-		rt.input("extension"); // the gate's own nudge, a watchdog poke, goal-mode's "keep going"
+		spendBudget(rt.gate);
+		rt.input("extension"); // the watchdog, goal-mode's "keep going", this gate's own message
 
 		await rt.tool.execute("c1", { question: "original task" }, undefined, undefined, rt.ctx);
 
 		expect(rt.launched()).toBe(0);
 	});
 
-	test("an injection after the human's word does not swallow the grant", async () => {
+	test("an injection after the human's word cannot swallow the refill", async () => {
 		const rt = harness();
-		failBudget(rt.gate);
+		spendBudget(rt.gate);
 		rt.input("interactive");
-		// Freeze-warn/nudge lands after the human spoke: the authorization underneath still counts
-		rt.input("extension"); // e.g. the freeze warning that edit triggered
+		rt.input("extension");
 
 		await rt.tool.execute("c1", { question: "original task" }, undefined, undefined, rt.ctx);
 
 		expect(rt.launched()).toBe(1);
 	});
 
-	test("one human input grants one budget, not a permanent pass", async () => {
+	test("one human reply buys one budget, not a permanent pass", async () => {
 		const rt = harness();
-		failBudget(rt.gate);
+		spendBudget(rt.gate);
 		rt.input("interactive");
 		await rt.tool.execute("c1", { question: "original task" }, undefined, undefined, rt.ctx);
 		expect(rt.launched()).toBe(1);
 
-		// Another full streak of FAILs; that same turn is spent
-		failBudget(rt.gate);
+		spendBudget(rt.gate);
 		await rt.tool.execute("c2", { question: "original task" }, undefined, undefined, rt.ctx);
 
 		expect(rt.launched()).toBe(1);

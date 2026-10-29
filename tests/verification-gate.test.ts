@@ -1,155 +1,135 @@
 /**
- * Unit tests for the verification gate's pure logic: fingerprint derivation, verdict parsing,
- * and ledger application. The event wiring (tool_result/agent_settled) needs a live pi session
- * and is covered by manual verification.
+ * Pure logic of the verification gate: the ledger, the ticket it derives, and the three refusals.
+ * The event wiring (tool_call / agent_settled) is covered in verification-gate-coordination.test.ts.
  */
 import { describe, expect, test } from "bun:test";
-import { applyLedger, emptyStateForTest, fingerprintOf, parseVerdict } from "../src/session/verification-gate";
+import { ROUND_LIMIT, resolveVerification, type VerificationSettings } from "../src/core/config";
+import {
+	applyLedger,
+	distinctPaths,
+	emptyStateForTest,
+	parseVerdict,
+	refuseDone,
+	refuseEdit,
+	refuseVerification,
+	ticketOf,
+} from "../src/session/verification-gate";
+import { useGateEnv } from "./gate-env";
 
-describe("fingerprintOf", () => {
-	test("same change set yields the same fingerprint", () => {
-		const a = [
-			{ path: "/a.ts", mtime: 100 },
-			{ path: "/b.ts", mtime: 200 },
-		];
-		const b = [
-			{ path: "/a.ts", mtime: 100 },
-			{ path: "/b.ts", mtime: 200 },
-		];
-		expect(fingerprintOf(a)).toBe(fingerprintOf(b));
-	});
-
-	test("order of the set does not matter", () => {
-		const a = [
-			{ path: "/a.ts", mtime: 100 },
-			{ path: "/b.ts", mtime: 200 },
-		];
-		const b = [
-			{ path: "/b.ts", mtime: 200 },
-			{ path: "/a.ts", mtime: 100 },
-		];
-		expect(fingerprintOf(a)).toBe(fingerprintOf(b));
-	});
-
-	test("re-writing the same file (new mtime) yields a NEW fingerprint", () => {
-		// Load-bearing: a fix-after-FAIL touching the same files must not look "already handled".
-		const before = [{ path: "/a.ts", mtime: 100 }];
-		const after = [{ path: "/a.ts", mtime: 200 }];
-		expect(fingerprintOf(after)).not.toBe(fingerprintOf(before));
-	});
-
-	test("an added file yields a NEW fingerprint", () => {
-		const before = [{ path: "/a.ts", mtime: 100 }];
-		const after = [
-			{ path: "/a.ts", mtime: 100 },
-			{ path: "/b.ts", mtime: 100 },
-		];
-		expect(fingerprintOf(after)).not.toBe(fingerprintOf(before));
-	});
+const cfg = (patch: Partial<VerificationSettings> = {}): VerificationSettings => ({
+	enabled: true,
+	minChangedFiles: 3,
+	...patch,
 });
 
+/** Register a round and land its verdict, the way the tool and the report poll do. */
+function round(s: ReturnType<typeof emptyStateForTest>, verdict: "PASS" | "FAIL" | "PARTIAL"): void {
+	applyLedger(s, { kind: "verifier", artifactPath: "/tmp/r/result.md" });
+	applyLedger(s, {
+		kind: "verdict",
+		verdict,
+		artifactPath: "/tmp/r/result.md",
+		paths: s.verifierSnapshot.map((c) => c.path),
+	});
+}
+
 describe("parseVerdict", () => {
-	test("parses the exact verdict line", () => {
-		expect(parseVerdict("stuff\nVERDICT: PASS\n")).toBe("PASS");
-		expect(parseVerdict("VERDICT: FAIL")).toBe("FAIL");
-		expect(parseVerdict("VERDICT: PARTIAL")).toBe("PARTIAL");
-	});
-
-	test("takes the last verdict line when the report repeats it", () => {
+	test("takes the last verdict line and rejects look-alikes", () => {
 		expect(parseVerdict("VERDICT: FAIL\n...fixed...\nVERDICT: PASS\n")).toBe("PASS");
-	});
-
-	test("rejects look-alikes", () => {
-		expect(parseVerdict("**VERDICT: PASS**")).toBeUndefined(); // markdown bold is forbidden by the prompt
-		expect(parseVerdict("verdict: pass")).toBeUndefined(); // case-sensitive by contract
-		expect(parseVerdict("VERDICT: SURE")).toBeUndefined();
+		expect(parseVerdict("**VERDICT: PASS**")).toBeUndefined();
 		expect(parseVerdict("no verdict here")).toBeUndefined();
 	});
 });
 
-describe("applyLedger", () => {
-	test("changes accumulate; PASS clears the pending set", () => {
+describe("ledger", () => {
+	test("a PASS clears exactly what the verifier saw; edits made during the run stay pending", () => {
 		const s = emptyStateForTest();
 		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
-		applyLedger(s, { kind: "change", path: "/b.ts", mtime: 2 });
-		expect(s.pending).toHaveLength(2);
-		const fp = fingerprintOf(s.pending);
-		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md" });
-		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "PASS", artifactPath: "/tmp/x/result.md" });
-		expect(s.pending).toHaveLength(0);
-		expect(s.verifierArtifactPath).toBe("");
+		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/r/result.md" });
+		applyLedger(s, { kind: "change", path: "/b.ts", mtime: 2 }); // edited while the verifier ran
+		applyLedger(s, { kind: "verdict", verdict: "PASS", artifactPath: "/tmp/r/result.md", paths: ["/a.ts"] });
+		expect(s.pending.map((c) => c.path)).toEqual(["/b.ts"]);
+		expect(ticketOf(s)).toBe("stale"); // the PASS is now older than the tree
 	});
 
-	test("PARTIAL clears the snapshot too (it means verified-with-limits)", () => {
+	test("a human reply opens a new burst and refills the rounds; a verdict does not", () => {
 		const s = emptyStateForTest();
 		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
-		const fp = fingerprintOf(s.pending);
-		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
-		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "PARTIAL", artifactPath: "/tmp/x/result.md" });
-		expect(s.pending).toHaveLength(0);
-	});
-
-	test("FAIL keeps the pending set (the fix will re-fingerprint) and clears the nudge counter", () => {
-		const s = emptyStateForTest();
-		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
-		const fp = fingerprintOf(s.pending);
-		applyLedger(s, { kind: "nudge", fingerprint: fp, count: 2 });
-		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
-		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
-		expect(s.pending).toHaveLength(1);
-		expect(s.verifierArtifactPath).toBe("");
-		expect(s.nudges.get(fp)).toBeUndefined();
-	});
-
-	test("PASS clears only the snapshot: edits made while the verifier ran stay pending", () => {
-		const s = emptyStateForTest();
-		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
-		const fp = fingerprintOf(s.pending);
-		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
-		// The model edits another file while the verifier is running
-		applyLedger(s, { kind: "change", path: "/b.ts", mtime: 2 });
-		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "PASS", artifactPath: "/tmp/x/result.md" });
-		expect(s.pending.map((c) => c.path)).toEqual(["/b.ts"]); // /a.ts cleared, /b.ts kept
-		expect(s.verifierArtifactPath).toBe("");
-		expect(s.verifierSnapshot).toHaveLength(0);
-	});
-
-	test("PASS freezes the files it covered; FAIL freezes nothing", () => {
-		const s = emptyStateForTest();
-		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
-		const fp = fingerprintOf(s.pending);
-		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
-		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
-		expect(s.frozen.size).toBe(0);
-
-		applyLedger(s, { kind: "verifier", artifactPath: "/tmp/x/result.md", fingerprint: fp });
-		applyLedger(s, { kind: "verdict", fingerprint: fp, verdict: "PASS", artifactPath: "/tmp/x/result.md" });
-		expect([...s.frozen.keys()]).toEqual(["/a.ts"]);
-
-		// The warning is recorded, so a reload cannot repeat it
-		applyLedger(s, { kind: "freeze-warn", path: "/a.ts", fingerprint: fp });
-		expect(s.frozenWarned.get("/a.ts")).toBe(fp);
-	});
-
-	test("fail streak: FAIL grows it, PASS resets it, PARTIAL leaves it alone", () => {
-		const s = emptyStateForTest();
-		const fail = () =>
-			applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
-		fail();
-		fail();
+		round(s, "FAIL");
+		round(s, "FAIL");
+		expect(s.roundsUsed).toBe(2);
 		expect(s.failStreak).toBe(2);
-		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "PARTIAL", artifactPath: "/tmp/x/result.md" });
-		expect(s.failStreak).toBe(2);
-		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "PASS", artifactPath: "/tmp/x/result.md" });
+		applyLedger(s, { kind: "burst" });
+		expect(s.roundsUsed).toBe(0);
 		expect(s.failStreak).toBe(0);
 	});
 
-	test("escalate records the streak it fired at, so the same streak does not escalate twice", () => {
+	test("the ticket is derived from pending + the last verdict, never stored", () => {
 		const s = emptyStateForTest();
-		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "FAIL", artifactPath: "/tmp/x/result.md" });
-		applyLedger(s, { kind: "escalate", streak: 1 });
-		expect(s.escalatedAt).toBe(1);
-		applyLedger(s, { kind: "verdict", fingerprint: "f", verdict: "PASS", artifactPath: "/tmp/x/result.md" });
-		expect(s.escalatedAt).toBe(0); // a PASS re-arms it
+		expect(ticketOf(s)).toBe("none");
+		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
+		expect(ticketOf(s)).toBe("dirty");
+		round(s, "PASS");
+		expect(ticketOf(s)).toBe("checked");
+		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 9 });
+		expect(ticketOf(s)).toBe("stale");
 	});
+});
+
+describe("refusals", () => {
+	test("a round past the limit is refused, even with the gate switched off", () => {
+		const s = emptyStateForTest();
+		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
+		for (let i = 0; i < ROUND_LIMIT; i++) round(s, "FAIL");
+		expect(refuseVerification(s, cfg())).toContain("already used its");
+		expect(refuseVerification(s, cfg({ enabled: false }))).toContain("already used its");
+	});
+
+	test("re-verifying a tree a verdict already covered is refused: it would prove nothing", () => {
+		const s = emptyStateForTest();
+		// Nothing recorded at all: allowed, because bash edits never reach the ledger and a false
+		// "nothing to verify" would block a legitimate round.
+		expect(refuseVerification(s, cfg())).toBeUndefined();
+		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
+		expect(refuseVerification(s, cfg())).toBeUndefined();
+		round(s, "PASS");
+		expect(refuseVerification(s, cfg())).toContain("No file changed");
+	});
+
+	test("the last round closes the pen: further edits are refused, never rounds before it", () => {
+		const s = emptyStateForTest();
+		applyLedger(s, { kind: "change", path: "/a.ts", mtime: 1 });
+		expect(refuseEdit(s, cfg())).toBeUndefined();
+		for (let i = 0; i < ROUND_LIMIT; i++) round(s, "PASS");
+		expect(refuseEdit(s, cfg())).toContain("editing stops here");
+		expect(refuseEdit(s, cfg({ enabled: false }))).toBeUndefined(); // switched off = no barrier
+	});
+
+	test("done is refused while files are unverified, but allowed once the rounds are spent", () => {
+		const s = emptyStateForTest();
+		for (const p of ["/a.ts", "/b.ts", "/c.ts"]) applyLedger(s, { kind: "change", path: p, mtime: 1 });
+		expect(refuseDone(s, cfg())).toContain("/a.ts");
+		expect(refuseDone(s, cfg({ minChangedFiles: 4 }))).toBeUndefined(); // below the threshold
+		for (let i = 0; i < ROUND_LIMIT; i++) round(s, "FAIL");
+		// Blocking done here would wedge the session: edits are refused, a round is refused
+		expect(refuseDone(s, cfg())).toBeUndefined();
+	});
+
+	test("distinctPaths counts files, not writes", () => {
+		expect(
+			distinctPaths([
+				{ path: "/a.ts", mtime: 1 },
+				{ path: "/a.ts", mtime: 2 },
+			]),
+		).toEqual(["/a.ts"]);
+	});
+});
+
+test("with no config at all the gate is on and needs 3 files", () => {
+	const env = useGateEnv({});
+	try {
+		expect(resolveVerification()).toEqual({ enabled: true, minChangedFiles: 3 });
+	} finally {
+		env.restore();
+	}
 });

@@ -164,7 +164,17 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 
 ### 硬门：不验证不许收尾
 
-与 advisor 的“建议”不同，verification 是代码层的强制（这正是移植它要解决的问题）：开启后，只要有非平凡改动（默认 ≥ 3 个不同文件被 write/edit 成功落盘，可用配置改）在收尾时没有验证结论，门会自动注入一条 user message 强制模型先跑 `verification` 工具再报告完成（最多 `nudgeLimit` 次，默认 3；到顶后不再自动催，改为给用户发显式警告，绝不静默放行）。改动的记账来自工具执行结果（成功落盘时的 path+mtime），不来自模型自己的描述，所以模型口头上说“改完了”骗不过门；同一文件重复写入会生成新指纹，修完 FAIL 之后再验的路径也不会被误放行。路径统一先过 `resolve()`，所以同一个文件写成相对路径还是绝对路径都算同一个文件。账本存在会话 custom entries 里，`/reload`、resume 之后状态不丢（重放前先清空，不会因为重复的 `session_start` 翻倍）。
+与 advisor 的“建议”不同，verification 是代码层的强制（这正是移植它要解决的问题）：开启后，只要有非平凡改动（默认 ≥ 3 个不同文件被 write/edit 成功落盘，可用配置改）在收尾时没有验证结论，门会在结算时注入一条 user message 要模型先跑 `verification` 工具再报告完成。改动的记账来自工具执行结果（成功落盘时的 path+mtime），不来自模型自己的描述，所以模型口头上说“改完了”骗不过门。路径统一先过 `resolve()`，同一个文件写成相对路径还是绝对路径都算同一个文件。账本存在会话 custom entries 里，`/reload`、resume 之后状态不丢（重放前先清空，不会因为重复的 `session_start` 翻倍）。
+
+**一轮对话 = 一个 burst，3 轮验证**：用户每回一句话开一个新 burst，预算重置。burst 内是 `改 → 验 → 改 → 验 → 改 → 验`，`ROUND_LIMIT`（3，写死在代码里）用完就停：`edit`/`write` 被拒，`verification` 也被拒，模型只能向用户汇报「哪些验过了、哪些没验」。PASS 之后停不停由模型自己决定——想收尾就收尾，想再用一轮修个真问题也行，但不能拿多出来的轮次做无意义的打磨。被拒时用户会收到一次警告（每个 burst 一次），不会出现「门自己停了但没人知道」。
+
+门只拒三种情况，且都是**在工具调用那一刻拒**（`tool_call` 可以 block），不是排队发消息——拒绝在读到的那一刻永远是真的，也不占地、不会积压：
+
+1. 预算用完还想再验一轮 → 拒。
+2. 改动集没变（没有新落盘的文件）还想验 → 拒：同一份字节验第二遍，PASS 也证明不了任何东西。
+3. 还有没验的文件就 `watchdog_decide("done")` 收尾 → 拒，并列出那些文件。预算用完之后不再拦 done（否则改不了、验不了、也收不了尾，直接死锁），改成给用户一条带「未验证文件」的警告。
+
+旧版是「每改一个文件就排队发一条消息」：一句话的改动会排 5 条，`followUp` 每个回合只投递一条，于是工作结束 20 分钟后还有消息在喊「刚刚改过」，而那时文件早就没动过——两次事故（qmdr、floor-gold）都是这么烧掉几十分钟的。现在每个 burst 只有一条消息，内容是**投递那一刻现算的**，没有未验证文件就不发，所以「刚刚改过」这种会过期的说法在结构上不可能出现。
 
 **触发时机跟 watchdog 协调（完成顺序，不是文件顺序）**：watchdog 在跑时，`agent_settled` 只说明「这一轮结束了」，不说明「任务做完了」（watchdog 会继续催，断流也会 settle）。所以门在 watchdog 活跃时对普通 settle 保持沉默，只认 watchdog 的 done 信号（`watchdog_decide` 收尾，pi-watchdog 发出的 `watchdog:stopped`，常驻模式打盹也发）之后的那个 settle，在那时刻才催验证；没有 watchdog（或已停/额度用完）时退回「settle 即完成」的旧行为兜底。这样断流恢复永远由 watchdog 负责，验证只发生在活真正干完之后。verifier 子 agent 侧同样按完成顺序记账：主会话的轮询等 exit 文件出现（收尾真跑完）才从 result.md 读 verdict，避免把断流后即将被改写的半截报告当成结论。
 
@@ -173,16 +183,16 @@ result.md，结束时发一个信号通知主会话。除此之外的细节（wa
 - `/verification` 面板式开关，**立即生效**（门在决策时现读配置，不像 advisor 的开关要重启），页脚常驻显示当前状态。
 - **默认开启**：不需要任何配置，`~/.pi/agent/subagent_advisor.json` 里没有 `verification` 段也照样拦截。只有显式写 `"enabled": false`（或用 `/verification` 关掉）才停用。
 
-### 四道刹车：别让「改一版 → 验一轮 → 又 FAIL」无限转
+### 刹车：别让「改一版 → 验一轮 → 又 FAIL」无限转
 
-验证子 agent 的默认人设是「把刚做完的弄坏」，再加上没有范围限制，很容易挖出永远修不完的边角问题。实测过一场 3 小时的会话：9 轮验证、112 分钟在等验证子 agent，最后卡在「已经 PASS 了又去改一个 observation」。所以门里加了四道代码级的刹车，模型说什么都不算数：
+验证子 agent 的默认人设是「把刚做完的弄坏」，很容易挖出永远修不完的边角问题。实测过一场 3 小时的会话：9 轮验证、112 分钟在等验证子 agent。所以门里加了几道代码级的刹车，模型说什么都不算数：
 
 - **验证 brief 自带范围闸**：只验原任务 + 本次改动引入的回归；改动之前就有的缺陷、假设性环境（老版本工具、诡异文件系统、并发会话）、没人要求的加固，一律写进报告里固定的 `## Observations (non-blocking)` 段，**不许改变 VERDICT**。判 FAIL 必须点名它破坏了原任务的哪一条。
-- **PASS 冻结**：PASS/PARTIAL 的结果会记住它覆盖了哪些文件（verdict 条目里的 `paths`）。之后再动这些文件，那份结论当场失效，门会提醒一次（同一文件同一份结论只提醒一次，记账在 `freeze-warn` 条目里，reload 不会重复），因为「刚 PASS 顺手再改一个 nit」是最亏的操作——一次干净的验证被作废，还得再等一整轮。
-- **连续 FAIL 双阈值**：`failStreak` 记连续 FAIL 轮数（FAIL +1，PASS 归零，PARTIAL 不加不减）。到 2 轮（`FAIL_SOFT_LIMIT`）时，正常催验消息后面追加一段分流提示：剩下的失败到底破坏了原任务，还是可以记成 observation 就算了。到 4 轮（`FAIL_HARD_LIMIT`）时不再催，改为给用户发警告 + 让模型停手汇报（哪些没过、哪些是 observation、请用户决定）。只要还在连续失败，每多一轮 FAIL 都会再升级一次——PASS 或用户回一句话才能解除，这样模型不理警告也躲不过下一次。两个阈值写死在 `src/core/config.ts` 里，**不读配置文件**：刹车要是能靠改配置绕开，就等于没有。
-- **工具入口刹车**：上面三道都挂在 `agent_settled` 上，可循环也可以完全不 settle——每轮在 bash 里阻塞 15 分钟等 verifier，改完直接开下一轮，从头到尾没有一刻是「这一轮结束了」。实测那场 4 小时的会话就是这样连了 9 轮 FAIL，而当时门甚至是关着的。所以 `verification` 工具在 spawn 之前也查一次 `failStreak`：到 `FAIL_HARD_LIMIT` 直接不启动，把「停手、向用户汇报、哪些算 observation」作为工具结果返回（不依赖 `enabled`，关着门也刹得住）。
+- **burst 预算**（见上一节）：一个 burst 最多 3 轮，用完拒绝继续改、继续验。`ROUND_LIMIT` 写死在 `src/core/config.ts`，**不读配置文件**：刹车要是能靠改配置绕开，就等于没有。旧版按「指纹」计次，每次改动 mtime 一变就是新指纹、预算自动续杯，所以那种刹车等于没有刹车。
+- **分流阈值**：`failStreak` 记连续 FAIL 轮数（FAIL +1，PASS 归零，PARTIAL 不加不减）。到 2 轮（`FAIL_SOFT_LIMIT`）时，那条唯一的消息后面追加一段分流提示：剩下的失败到底破坏了原任务，还是可以记成 observation 就算了。
+- **工具入口**：轮数检查在 `verification` 工具自己里也查一遍，所以哪怕会话一直不 settle（每轮在 bash 里阻塞 15 分钟等 verifier）也照样停得住；而且这条检查不依赖 `enabled`，关着门也刹得住——实测那场 9 轮就是门关着的时候跑出来的。
 
-刹车的逃生口是用户本人：pi 的 `input` 事件带来源标记（`interactive` / `rpc` / `extension`），只有不是 `extension` 的那才记成 `grant` 条目——`failStreak` 清零、预算重开，被自己的门卡死这种事不会发生。用来源标记而不是猜消息内容，是因为别的扩展也会往主会话里 `sendUserMessage`（goal-mode 的续跑、watchdog、本门自己的催验和 freeze 警告），那些都不算“用户决定”，也不会因为多插一条就把用户刚才的授权顶掉。
+刹车的逃生口是用户本人：pi 的 `input` 事件带来源标记（`interactive` / `rpc` / `extension`），只有不是 `extension` 的那才开新 burst——预算重开，被自己的门卡死这种事不会发生。用来源标记而不是猜消息内容，是因为别的扩展也会往主会话里 `sendUserMessage`（goal-mode 的续跑、watchdog、本门自己的消息），那些都不算“用户决定”，也不会因为多插一条就把用户刚才的授权顶掉。
 
 验证子 agent 的工具白名单是 `read` / `bash` / `write` / `edit`（+ watchdog 路径的 `watchdog_decide`）。write/edit 会经 write-fence 拦住：verifier 只能写到交付文件本身（result.md 路径），写别的地方会被 block，算是把“不许改项目”从只靠 prompt 约束升级成了硬防线。**残余风险**：verifier 要跑 build/test，所以 bash 不能像 advisor 那样收只读（build 产物要写盘），verifier 用 bash 重定向写项目文件没有防线——这与 Claude Code 原版一致（原版同样只靠 prompt 约束 bash）。如果后续给 pi-extension-bash-guard 加一个 verifier 档位（允许 build/test/写 /tmp、拦项目目录写），这里接入即可。
 
