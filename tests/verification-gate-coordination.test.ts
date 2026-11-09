@@ -98,6 +98,38 @@ function round(gate: VerificationGate, verdict: "PASS" | "FAIL" | "PARTIAL", fil
 	gate.recordVerdictFromReport();
 }
 
+describe("verification gate × watchdog check turn", () => {
+	test("done during a watchdog check turn is never refused (the deadlock fix)", async () => {
+		const rt = mockPi();
+		setupVerificationGate(rt.pi);
+		await rt.change();
+		rt.pi.events.emit("watchdog:state", { running: true, checkTurn: true });
+		expect(await rt.callTool("watchdog_decide", { decision: "done" })).toBeUndefined();
+	});
+
+	test("the check turn closing re-arms the refusal in a normal turn", async () => {
+		const rt = mockPi();
+		setupVerificationGate(rt.pi);
+		await rt.change();
+		rt.pi.events.emit("watchdog:state", { running: true, checkTurn: true });
+		rt.pi.events.emit("watchdog:state", { running: true, checkTurn: false });
+		const refused = await rt.callTool("watchdog_decide", { decision: "done" });
+		expect(refused?.block).toBe(true);
+	});
+
+	test("after the check-turn done passes, the settle message carries the demand", async () => {
+		const rt = mockPi();
+		setupVerificationGate(rt.pi);
+		await rt.change();
+		rt.pi.events.emit("watchdog:state", { running: true, checkTurn: true });
+		await rt.callTool("watchdog_decide", { decision: "done" });
+		rt.pi.events.emit("watchdog:stopped", { reason: "ai-stop", suspended: false });
+		await rt.settle();
+		expect(rt.sent).toHaveLength(1);
+		expect(rt.sent[0].text).toContain("unverified");
+	});
+});
+
 describe("verification gate × settle message", () => {
 	test("five edits produce ONE message, not five", async () => {
 		const rt = mockPi();

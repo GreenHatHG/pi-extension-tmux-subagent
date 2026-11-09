@@ -224,6 +224,10 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 	// continuations; aiDeclaredDone = the done signal arrived and its settle is not processed yet.
 	let watchdogSeen = false;
 	let watchdogRunning = false;
+	// A watchdog check turn blocks every tool but watchdog_decide: a "run verification" demand made
+	// there is physically impossible (the done×verification deadlock). Let done pass; the gate's
+	// settle-message path re-delivers the demand after the stop, in a turn where tools work again.
+	let watchdogCheckTurn = false;
 	let aiDeclaredDone = false;
 
 	/** Append one ledger line and apply it to the in-memory state (single source of truth). */
@@ -300,6 +304,9 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 				if (e.toolName === "edit" || e.toolName === "write") return limitMessage(refuseEdit(state, cfg));
 				if (e.toolName === "watchdog_decide") {
 					if (e.input?.decision !== "done") return undefined;
+					// The demand is unsatisfiable inside a check turn; pushing it into the post-stop settle
+					// message is the only place the model can act on it.
+					if (watchdogCheckTurn) return undefined;
 					const doneMsg = refuseDone(state, cfg);
 					if (doneMsg) return limitMessage(doneMsg);
 					// Spent budget: the wrap-up goes through (blocking it would wedge the session), so the
@@ -395,8 +402,9 @@ export function setupVerificationGate(pi: ExtensionAPI): VerificationGate {
 
 	pi.events.on("watchdog:state", (event: unknown) => {
 		watchdogSeen = true;
-		const e = event as { running?: boolean } | undefined;
+		const e = event as { running?: boolean; checkTurn?: boolean } | undefined;
 		watchdogRunning = e?.running === true;
+		watchdogCheckTurn = e?.checkTurn === true;
 	});
 	pi.events.on("watchdog:stopped", (event: unknown) => {
 		watchdogSeen = true;
