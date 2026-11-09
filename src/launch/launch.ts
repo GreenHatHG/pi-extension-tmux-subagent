@@ -4,7 +4,6 @@
  * and all wrap-up protocol differences come from CompletionProfile.
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	baseEnvArgs,
@@ -18,7 +17,6 @@ import {
 import { kebab, resolvePaths, type SubagentPaths, shortId } from "../core/paths";
 import { runTmux, SOCKET, styleSubagentSession } from "../core/tmux";
 import { type SubagentMode, taskMode } from "../modes/types";
-import { runVccCompact, type VccSummary } from "../modes/vcc";
 
 /**
  * The session name has a random suffix so this normally won't hit; but even in the fallback case we
@@ -158,9 +156,6 @@ export async function launchSub(
 	mode: SubagentMode = taskMode,
 	extraArgs: string[] = [],
 	opts?: {
-		/** Advisor forensics: main-session jsonl path and pi-vcc CLI command, passed to the brief's forensics section. */
-		sessionFile?: string;
-		vccCli?: string;
 		/** Main session ID that started this sub-agent. */
 		parentSessionId?: string;
 	},
@@ -182,29 +177,7 @@ export async function launchSub(
 		return { ok: false, text: clash };
 	}
 
-	// Advisor forensics step 1: pre-generate the vcc compressed summary (create the dir first). Only a
-	// command the shell cannot find blocks the launch (exit 127 = advisor.vccCli is wrong): the advisor
-	// would start blind and spend its whole run probing for the missing binary. Every other failure —
-	// timeout, "too few messages to compact", a session file not yet on disk — is ordinary, so it
-	// launches and the brief carries the reason.
-	let vccSummary: VccSummary | undefined;
-	if (opts?.sessionFile && opts?.vccCli) {
-		mkdirSync(paths.dir, { recursive: true });
-		vccSummary = await runVccCompact(opts.vccCli, opts.sessionFile, join(paths.dir, "vcc-summary.md"));
-		if (!vccSummary.ok && vccSummary.commandMissing) {
-			rmSync(vccSummary.path, { force: true });
-			return {
-				ok: false,
-				text: `Advisor not started: the forensics command could not be found (${vccSummary.error}). advisor.vccCli is currently: ${opts.vccCli}. If the binary is not on PATH, swap the bare command name for its absolute path (quoted inside the JSON string, the shell splits on spaces), or delete the key to run the advisor without forensics.`,
-			};
-		}
-	}
-
-	const brief = mode.brief(question, context, paths.artifactPath, useWatchdog, {
-		sessionFile: opts?.sessionFile,
-		vccCli: opts?.vccCli,
-		vccSummary,
-	});
+	const brief = mode.brief(question, context, paths.artifactPath, useWatchdog);
 	prepareRunDir(paths, brief);
 
 	// Mode preset flags first, caller extraArgs after: for single-value flags like
@@ -217,7 +190,6 @@ export async function launchSub(
 		"new-session",
 		...baseEnvArgs(paths),
 		...completion.extraEnvArgs,
-		...mode.extraEnvArgs(),
 		"-d",
 		"-s",
 		paths.session,

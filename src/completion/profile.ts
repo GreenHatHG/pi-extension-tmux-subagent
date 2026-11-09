@@ -79,11 +79,15 @@ export function resolveCompletion(useWatchdog: boolean, paths: SubagentPaths): C
 				// never hangs; it just sees a failure. The pane shell's `echo $?` normally never runs
 				// (the SIGHUP from kill-session wins), so this pre-written value is what the waiter reads.
 				// Authorization: only the pane pi itself may fire this chain. The pi watchdog extension
-				// writes its pid to the pidfile at session_start; the chain compares it with the spawning
+				// writes its pid to the pidfile when ON_STOP fires; the chain compares it with the spawning
 				// process ($PPID). Any descendant that inherited this env (a vitest worker running the
-				// project's tests, a stray script) has a different ppid, so the chain exits without
-				// killing the pane — this is what stops test-suite-triggered wrap-ups.
-				`PI_WATCHDOG_ON_STOP=if [ -s ${paths.dir}/pi.pid ] && [ "$(cat ${paths.dir}/pi.pid)" != "$PPID" ]; then exit 0; fi; if [ -s ${paths.artifactPath} ]; then echo 0; else echo 98; fi > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
+				// project's tests, a stray script) has a different ppid, so the chain must not kill-session
+				// the pane — that is what this gate protects. But a gated exit used to skip the signal too,
+				// and a stale pidfile (pi host replaced between write and check) then hung the waiter until
+				// the pane-died backstop. So the gated branch still writes the exit file and releases the
+				// waiter (98: no authorized wrap-up ran); only the kill-session stays gated. The gate
+				// decision is stamped into the flight recorder, so a swallowed wrap-up is diagnosable.
+				`PI_WATCHDOG_ON_STOP=if [ -s ${paths.dir}/pi.pid ] && [ "$(cat ${paths.dir}/pi.pid)" != "$PPID" ]; then echo 98 > ${paths.exitFile}; echo "$(date -u +%FT%TZ) ON_STOP gated (pidfile=$(cat ${paths.dir}/pi.pid 2>/dev/null) ppid=$PPID)" >> ${paths.dir}/signals.log 2>/dev/null; TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done}; exit 0; fi; if [ -s ${paths.artifactPath} ]; then echo 0; else echo 98; fi > ${paths.exitFile} && TMUX= tmux -L ${SOCKET} wait-for -S ${paths.done} && sleep 0.3 && TMUX= tmux -L ${SOCKET} kill-session -t ${paths.session}`,
 			],
 			rollbackOnHookFailure: false,
 			exitNote:
@@ -119,9 +123,10 @@ export function baseEnvArgs(paths: SubagentPaths): string[] {
 		// into the run dir, so a silent exit=0 (e.g. an external SIGTERM mid-run) leaves a trace.
 		"-e",
 		`${ENV_SUB_DEBUG}=${paths.dir}/signals.log`,
-		// Watchdog pidfile: the pane pi writes its pid here at session_start, and the ON_STOP chain
-		// only fires when its spawning process matches — descendants inheriting the env (tests, etc.)
-		// can no longer kill-session the pane. Watchdog-only: batch mode has no watchdog extension.
+		// Watchdog pidfile: the pane pi writes its pid here when ON_STOP fires (decide-tool.ts, not
+		// session_start — a start-time snapshot went stale when the pi host replaced itself and the
+		// ON_STOP gate then silently skipped the wrap-up). The ON_STOP chain only fires when its
+		// spawning process ($PPID) matches. Watchdog-only: batch mode has no watchdog extension.
 		"-e",
 		`PI_WATCHDOG_PIDFILE=${paths.dir}/pi.pid`,
 		// Write fence: write/edit in the pane may only target this run's deliverable. Without it,

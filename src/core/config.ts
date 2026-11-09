@@ -20,8 +20,6 @@ export interface AdvisorFileConfig {
 	model?: string;
 	/** Advisor is off when the current main model matches one of these; supports * wildcards and plain model ids. */
 	disabledModels?: string[];
-	/** Standalone pi-vcc CLI command (e.g. "pi-vcc" or "bun /path/to/pi-vcc/cli/main.ts"). */
-	vccCli?: string;
 	[key: string]: unknown;
 }
 
@@ -189,8 +187,6 @@ export interface AdvisorSettings {
 	disabledModels?: string[];
 	/** enabled: true but no model: stay off, and session_start tells the user to add config. */
 	missingModel?: boolean;
-	/** Standalone pi-vcc CLI command (e.g. "pi-vcc"). When set, the advisor brief gets a "raw session forensics" section (recall CLI recovers raw output the brief may drop); when unset, forensics is declared unavailable. */
-	vccCli?: string;
 }
 
 /**
@@ -202,9 +198,9 @@ export function resolveAdvisor(): AdvisorSettings {
 	const a = readAdvisorFileConfig();
 	const disabledModels = normalizeDisabledModels(a.disabledModels);
 	const env = process.env.PI_ADVISOR_MODEL?.trim();
-	if (env) return { enabled: true, model: env, disabledModels, vccCli: a.vccCli };
+	if (env) return { enabled: true, model: env, disabledModels };
 	if (a.enabled === false) return { enabled: false, disabledModels };
-	if (a.model?.trim()) return { enabled: true, model: a.model.trim(), disabledModels, vccCli: a.vccCli };
+	if (a.model?.trim()) return { enabled: true, model: a.model.trim(), disabledModels };
 	if (a.enabled === true) return { enabled: false, disabledModels, missingModel: true };
 	return { enabled: false, disabledModels };
 }

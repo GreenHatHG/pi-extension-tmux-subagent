@@ -1,18 +1,7 @@
-/** Brief templates for the three modes: each template is the sub-agent's only source of context. */
+/** Brief templates for the remaining modes: each template is the sub-agent's only source of context.
+ * (advisor no longer goes through this flow: it forks the main session's transcript, see launch/advisor-fork.ts) */
 import { WATCHDOG_TOOL } from "../completion/profile";
 import { SOCKET } from "../core/tmux";
-import type { VccSummary } from "./vcc";
-
-/**
- * Optional inputs for a brief: used by the advisor forensics section (task / web-research ignore it).
- * sessionFile = absolute path to the main session's (executor's) jsonl; vccCli = the pi-vcc CLI
- * command; vccSummary = the vcc compressed summary pre-generated at advisor start.
- */
-export interface BriefOpts {
-	sessionFile?: string;
-	vccCli?: string;
-	vccSummary?: VccSummary;
-}
 
 /** The watchdog interactive path needs an explicit wrap-up; the batch path skips this section. */
 function buildCompletionSection(useWatchdog: boolean): string {
@@ -48,94 +37,6 @@ ${completion}
 - tmux, if you use it at all: read-only inspection on -L ${SOCKET} (capture-pane/has-session/ls); never kill anything, and never touch the default tmux server`;
 }
 
-/** Stable list of recall CLI usage. */
-const recallCliGuide = (vccCli: string, sessionFile: string): string =>
-	`  - Search: \`${vccCli} recall ${sessionFile} <keywords>\` (multiple words are ranked by relevance; hits show only a local snippet)\n  - Full text of an entry: \`${vccCli} recall ${sessionFile} --expand 12,34\` (comma-separated #N indices, returns complete untruncated content — use this instead of re-querying with new keywords)\n  - Drill into a file's content: \`${vccCli} recall ${sessionFile} '#12:auth.ts'\` ('#12:auth.ts:full' for all lines)\n  - More usage: \`${vccCli} --help\` (only when the lines above are not enough — don't explore just to read the manual)`;
-
-/** Advisor forensics section (falls back by availability: pre-generated summary > recall CLI > session file only). */
-function buildAdvisorForensics(opts?: BriefOpts): string {
-	const sessionFile = opts?.sessionFile;
-	if (!sessionFile) {
-		return `## Raw session forensics
-- The main session is not on disk yet, so there is no forensics this time. You must verify the load-bearing premises in the background claims yourself with read / read-only shell; if you can't, mark it "unverified" in your reply and do not accept it by default.
-- If you need raw context, state the gap in your reply and the main session will fill it.
-
-`;
-	}
-
-	const vccCli = opts?.vccCli;
-	if (!vccCli) {
-		return `## Raw session forensics
-- Session file: ${sessionFile} (advisor.vccCli is not set, so there is no recall CLI / pre-generated summary)
-- You must verify the load-bearing premises in the background claims yourself with read / read-only shell; if you can't, mark it "unverified" in your reply and do not accept it by default. When you need raw context, state the gap in your reply and the main session will fill it.
-
-`;
-	}
-
-	const guide = recallCliGuide(vccCli, sessionFile);
-	const summary = opts?.vccSummary;
-	if (!vccSummaryOk(summary)) {
-		return `## Raw session forensics (recall CLI, read-only)
-- Summary pre-generation failed (${summary?.error ?? "no reason recorded"}), so there is no compressed summary to read directly: the main session's summary in this brief may miss command output, raw errors and timing details. A failed command stays failed for this run — don't go hunting for a missing binary; just fall back. When you suspect a gap, run the recall CLI with bash to recover it:
-${guide}
-  - You can also run \`${vccCli} compact ${sessionFile}\` yourself to see the whole session's compressed summary (stdout only, no --write)
-- Session file: ${sessionFile}
-- Verify the load-bearing premises in the background claims; if you can't, mark it "unverified" in your reply and do not accept it by default.
-
-`;
-	}
-
-	return `## Raw session forensics (vcc compressed summary + recall CLI, read-only; default evidence)
-- Step 1 (default): read ${summary.path}. It is the whole session's vcc compressed summary, pre-generated when advisor started (the full picture of steps, commands and conclusions so far), and it is an independent view that is neutral to the requester's framing — read it first for any non-trivial consultation
-- Step 2 — add detail as needed: the summary may still truncate command output / raw errors. When you suspect a gap, run the recall CLI with bash to search the main session's full record:
-${guide}
-- Session file: ${sessionFile}
-- When the summary/forensics conflicts with the background claims (hand-written by the main session): trust the summary and forensics, and call the conflict itself out in your reply — it is often the real problem
-
-`;
-}
-
-/**
- * Advisor mode brief template (wants judgment, not execution). Forensics section: see
- * buildAdvisorForensics; the watchdog path adds a run profile and the suggested result.md structure.
- */
-export function buildAdvisorBrief(
-	question: string,
-	context: string | undefined,
-	artifactPath: string,
-	useWatchdog: boolean,
-	opts?: BriefOpts,
-): string {
-	const tools = useWatchdog ? `read/write/${WATCHDOG_TOOL}/bash` : "read/write/bash";
-	const finish = useWatchdog
-		? `, then call ${WATCHDOG_TOOL} with decision "done" to finish`
-		: " (batch mode: ends as soon as it is written, no other wrap-up action)";
-	const forensics = buildAdvisorForensics(opts);
-	return `# Consultation brief
-
-## Question
-${question}
-
-## Claims under audit (provided by the main session; these are the requester's claims, not established facts — their load-bearing premises may be unverified, or may be the very error under review)
-${context?.trim() || "(none)"}
-
-## What to do
-- Give a judgment: plan (concrete next steps, in order) / correction (point out the wrong direction, redirect and explain why) / stop signal (halt and escalate to the user)
-- Conclusions first, keep it tight; name files/functions/line numbers; mark anything unverified
-- Audit the claims first: treat the background above as "claims under audit", not facts; find the load-bearing premises (the ones that would change your judgment if false) and verify each one
-- Forensics is the default evidence, not a bonus: if the forensics section has a pre-generated vcc session summary (below), read it first for any non-trivial consultation — it is a neutral compression of what actually happened, independent of the requester's framing. When the summary conflicts with the background claims, trust the forensics and call the conflict out in your reply (it is often the real problem)
-- Load-bearing premises must be verified: if your judgment depends on an empirical claim (how a command/tool really behaves or what it prints, whether an API works, what a file really contains) and neither forensics nor read settles it, verify it yourself with read-only tools (prefer the least invasive probe: read the source/docs, --help, a dry-run); if you can't, mark it "unverified" in your reply and say how your judgment depends on it; never accept it by default
-- Read files only when you need to verify a claim or fill a gap; make no real changes (write is for the deliverable only)
-
-${forensics}
-## Deliverable
-- Write the full advice to ${artifactPath}${finish}
-- Suggested structure (so the main session can act on it directly): judgment (plan / correction / stop signal) -> verified key facts (name file:line for each) -> a direct answer to each question -> an ordered execution plan -> unverified items
-
-## Boundaries
-- Your tools are only ${tools}, by design: you judge, the main session executes`;
-}
-
 /** useWatchdog = wrap up via watchdog_decide (false = pi -p, which exits on its own, no wrap-up action). */
 export function buildVerificationBrief(
 	question: string,
@@ -163,6 +64,7 @@ ${context?.trim() || "(none given — inspect the repo yourself)"}
 ## What to do
 - Verify independently: run the build, tests, linters, and exercise the change yourself per your system prompt; every PASS needs a real command run block
 - Try to break it: boundary values, error paths, idempotency, regressions — the happy path proves nothing
+- Promise audit (diff files only, not the whole tree): from each changed file's docstring/comments, extract the behavior verbs it promises (e.g. "kills the session", "sends the signal", "writes the file", "retries", "cleans up") and, for each, point at the exact line that implements it. A promise with no implementing line is a FAIL, not an observation — this is where silent omissions live (a comment saying "kill-session" with no kill call)
 - Do NOT share the implementer's own test results as evidence; treat them as claims to re-check
 
 ## What a FAIL means here
@@ -183,11 +85,6 @@ ${context?.trim() || "(none given — inspect the repo yourself)"}
 ## Boundaries
 - Your tools are only ${tools}, by design: you verify, the main session fixes
 - Never modify files in the project directory, never install dependencies, never run git write operations (the write fence enforces the deliverable path; temp-dir test scripts via bash are fine)`;
-}
-
-/** vccSummary exists and succeeded. */
-function vccSummaryOk(s?: VccSummary): s is VccSummary & { ok: true } {
-	return s?.ok === true;
 }
 
 /** Web-research mode brief template. */

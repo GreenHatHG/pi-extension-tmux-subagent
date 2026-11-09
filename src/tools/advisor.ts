@@ -1,14 +1,19 @@
 /**
  * advisor tool (main session, optional: registered by index.ts when resolveAdvisor().enabled).
- * Tool definition and config notices. Brief template and preset flags live in modes/.
+ * Fork-based design: one call = the plugin forks the main session's transcript into an interactive
+ * pi pane, the advisor model reviews the full verbatim history and answers in ONE round; the
+ * plugin reads the judgment back and (on REDIRECT/STOP) injects it as the next user turn (steer).
+ * No question/context params: the transcript is the context.
  */
+
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { isModelDisabled, parseModelSpec } from "../core/config";
-import { advisorMode } from "../modes/types";
+import { launchAdvisorFork } from "../launch/advisor-fork";
 import { onEvent } from "../registry";
-import { showSubagentBrief, watchSubagentReply } from "../ui/subagent-entries";
-import { type LaunchFn, renderResultWithOps, startedToolResult } from "./shared";
+import { showSubagentBrief } from "../ui/subagent-entries";
 
 /** Turn a pi --model string into a registration notice (split model and thinking). */
 function advisorRegistrationMessage(advisorModel: string): string {
@@ -74,16 +79,8 @@ export function setupAdvisorModelGuard(
 	);
 }
 
-/**
- * Register the advisor tool. Model/thinking come from config and can't be changed through tool
- * args: index.ts's launch callback reads config on each call to add --model; this function handles
- * the tool definition and the registration notice.
- *
- * @param advisorModel the pi --model string resolved at session start: used for the session_start
- *                     notice and as the fallback when config can't be read at call time
- * @param launch       the launch callback injected by index.ts (wraps launchSub with mode = advisorMode)
- */
-export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: LaunchFn): void {
+/** Register the advisor tool. `getModel` re-reads config at call time (a /advisor panel change applies next call). */
+export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, getModel: () => string): void {
 	// Explicitly tell the user advisor is registered and its model/thinking, so they don't have to trigger a call to find out
 	onEvent(
 		pi,
@@ -105,54 +102,75 @@ export function setupAdvisor(pi: ExtensionAPI, advisorModel: string, launch: Lau
 		name: "advisor",
 		label: "Consult advisor",
 		description: [
-			"Escalate to a stronger advisor model to review your plan, claim, or completed work before you act. The advisor is isolated:",
-			"it sees `question` and `context` (your claims, not established facts) and, when advisor.vccCli is configured, a read-only",
-			"vcc summary of this session plus recall access to the full transcript. Returns a plan, a correction, or a stop signal.",
-			"The full advice is written to a system-generated path (/tmp/pi-sub-<session>/result.md), whose exact value is given in the",
-			"tool response. Do not put the deliverable path in `question` — the brief the advisor receives already carries it",
+			"Escalate to a stronger advisor model when you hit a decision difficulty (errors recurring, approach not converging,",
+			"results that don't fit) or when changing approach. The advisor is forked from THIS session's transcript, so it sees",
+			"the full history including all tool inputs/outputs — do not restate the task; it already knows. It answers in one",
+			"round with a judgment ending in VERDICT: PROCEED/REDIRECT/STOP. On REDIRECT/STOP the judgment is queued as the next",
+			"user turn; on PROCEED the judgment comes back as this tool's result.",
 		].join(" "),
 		promptSnippet:
-			"get a second opinion on approach/claims/done-ness; call before substantive work, when stuck, or before declaring done",
-		// Rules borrowed from rpiv-advisor, merged down to four so the main session's context stays small:
-		// when to call, how to write `context`, what to do with the answer, and when not to bother.
+			"fork a stronger advisor over this session's full transcript when stuck or changing approach; it returns one verdict + judgment",
 		promptGuidelines: [
-			"advisor: call BEFORE substantive work (before writing, before committing to an interpretation, before building on an assumption; orientation is not substantive work), when stuck (errors recurring, approach not converging, results that don't fit) or when changing approach, and before declaring done — make the deliverable durable FIRST, since the call takes time and a durable result survives a session that ends mid-call.",
-			"advisor: write `context` as claims under audit, not established facts — the plan/interpretation to review plus its key premises, marking what you verified and what you assume. Every file path in it MUST be absolute (resolve against your cwd): the advisor cannot resolve relative paths.",
-			"advisor: give the advice serious weight — if a step fails empirically or evidence contradicts a specific claim, surface the conflict in another advisor call instead of silently switching branches. Then read the result.md path the tool response gives you and restate its key guidance in your next visible reply (the user often cannot see collapsed tool output).",
+			"advisor: call when stuck (errors recurring, approach not converging, results that don't fit) or when changing approach. It reads this session's full transcript itself — pass no arguments; just call it.",
+			"advisor: give the advice serious weight — if a step fails empirically or evidence contradicts a specific claim, surface the conflict in another advisor call instead of silently switching branches.",
 			"advisor: not for trivial lookups where the next action is dictated by tool output you just read — it adds latency and pays off on judgment calls.",
 		],
-		parameters: Type.Object({
-			question: Type.String({
-				description:
-					"The decision you need help with, stated precisely. This is judgment on a plan/approach/claim, not task delegation — do not paste the whole task; state what you intend to do and what you're unsure about",
-			}),
-			context: Type.Optional(
-				Type.String({
-					description: [
-						"Your claims under audit, not established facts: the plan/interpretation you want reviewed plus the key premises behind it (file paths, function/line references, constraints, URLs).",
-						"Mark what you verified and what you are assuming — the advisor is instructed to verify load-bearing unverified premises itself and to override your framing where the session record disagrees.",
-						"File paths MUST be absolute (e.g. /Users/you/Projects/app/src/index.ts), never relative — the advisor cannot resolve them against your cwd.",
-						"Anything not stated here is unknown to the advisor (except, when advisor.vccCli is configured, the read-only session forensics above)",
-					].join(" "),
-				}),
-			),
-		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			// advisor runs the full spawn flow (watchdog, pane-died, exit, wait-for); only the brief and
-			// the sub-agent's tools/prompt differ. The main session jsonl path is only available in
-			// execute's ctx, so pass it to launch for the brief's forensics section; it may be undefined
-			// before the first message lands on disk, and the brief then says forensics is unavailable.
-			const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
-			const r = await launch(params.question, params.context, sessionFile, ctx.sessionManager.getSessionId());
-			if (r.ok) {
-				// Brief/reply go through appendEntry to the TUI only, not into the LLM context
-				showSubagentBrief(pi, r, advisorMode.display);
-				watchSubagentReply(pi, r, advisorMode.display);
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			if (!sessionFile) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "Advisor not started: this session is not on disk yet (no messages persisted).",
+						},
+					],
+					details: undefined,
+				};
 			}
-			return startedToolResult(r.text, r.ops);
+			const r = await launchAdvisorFork(
+				pi,
+				sessionFile,
+				ctx.sessionManager.getSessionId(),
+				getModel(),
+				fileURLToPath(import.meta.resolve("../launch/verdict-extension.ts")),
+			);
+			// TUI display of the judgment (not into the LLM context; the return value below carries it)
+			if (r.judgment) {
+				showSubagentBrief(
+					pi,
+					{ brief: r.judgment },
+					{ briefLabel: "Advisor judgment", replyLabel: "Advisor judgment" },
+				);
+			}
+			if (r.ok && r.judgment && (r.verdict === "REDIRECT" || r.verdict === "STOP")) {
+				// Do NOT ctx.abort() here. In pi's TUI, ctx.abort() wires to restoreQueuedMessagesToEditor:
+				// it clears the steering queue into the editor and kills the run, and the agent loop
+				// returns immediately on an aborted assistant message without draining what was queued
+				// after the abort — the injected judgment would sit undelivered (seen live 2026-11-04,
+				// session 01a1a438: REDIRECT queued at .894, run died at .910, no continuation).
+				// Instead: queue as steer. The loop drains steering after this tool batch, so the very
+				// next LLM call sees the judgment as a user turn; the current tool result closes cleanly.
+				pi.sendUserMessage(
+					`[advisor ${r.verdict}] The advisor reviewed this session and issued a ${r.verdict}. Its judgment:\n\n${r.judgment}\n\nFollow this judgment now${r.verdict === "STOP" ? " — stop working and report to the user" : ""}.`,
+					{ deliverAs: "steer" },
+				);
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Advisor issued ${r.verdict}: its judgment was queued as the next user turn — follow it now${r.verdict === "STOP" ? " (stop working and report to the user)" : ""}.`,
+						},
+					],
+					details: undefined,
+				};
+			}
+			return { content: [{ type: "text" as const, text: r.text }], details: undefined };
 		},
-		renderResult(result, _options, theme, _context) {
-			return renderResultWithOps(result, "Advisor started (copy into any terminal to watch):", theme);
+		renderResult(result, _options, _theme, _context) {
+			const first = result.content[0];
+			return new Text(first?.type === "text" ? (first.text ?? "") : "", 0, 0);
 		},
 	});
 }

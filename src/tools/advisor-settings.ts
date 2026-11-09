@@ -218,7 +218,7 @@ function buildModelPicker(
 	};
 }
 
-/** Open the interactive panel: switch / model / thinking level (vccCli is read-only). Changes save right away. */
+/** Open the interactive panel: switch / model / thinking level. Changes save right away. */
 async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor): Promise<void> {
 	const file = readAdvisorFileConfig();
 	const envOverride = process.env.PI_ADVISOR_MODEL?.trim();
@@ -290,12 +290,6 @@ async function openAdvisorPanel(ctx: ExtensionContext, session: SessionAdvisor):
 				submenu: (_current, subDone) => buildModelPicker(models, draftModel, theme, (value) => subDone(value)),
 			},
 			thinkingItem,
-			{
-				id: "vccCli",
-				label: "vccCli",
-				description: "Raw session forensics CLI (read-only; edit subagent_advisor.json directly)",
-				currentValue: file.vccCli || "(not configured)",
-			},
 		];
 
 		function applyChange(id: string, newValue: string): void {

@@ -2,9 +2,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveAdvisor, resolveAdvisorModel } from "./core/config";
 import { resolveProcessRole } from "./core/env";
 import { setupFlightRecorder } from "./core/flight-recorder";
-import { shQuote } from "./core/tmux";
 import { launchSub } from "./launch/launch";
-import { advisorMode, taskMode, verificationMode, webResearchMode } from "./modes/types";
+import { taskMode, verificationMode, webResearchMode } from "./modes/types";
 import { setupSubagentSelfCheck } from "./session/gate";
 import { setupSubagentReaper } from "./session/reap";
 import { setupVerificationGate } from "./session/verification-gate";
@@ -76,15 +75,10 @@ export default async function (pi: ExtensionAPI) {
 	setupAdvisorSettings(pi, advisorSession);
 	if (advisor.enabled && advisor.model) {
 		const sessionModel = advisor.model;
-		setupAdvisor(pi, sessionModel, (question, context, sessionFile, parentSessionId) => {
+		setupAdvisor(pi, sessionModel, () => {
 			// Read model/thinking from config on every call (a /advisor panel change applies next call);
 			// if missing (cleared), fall back to the model from session start
-			const model = resolveAdvisorModel() ?? sessionModel;
-			return launchSub(pi, question, context, advisorMode, [`--model ${shQuote(model)}`], {
-				sessionFile,
-				vccCli: advisor.vccCli,
-				parentSessionId,
-			});
+			return resolveAdvisorModel() ?? sessionModel;
 		});
 	} else if (advisor.missingModel) {
 		// enabled: true with no model: stay off and tell the user in the session to add config
