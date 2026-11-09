@@ -43,7 +43,7 @@ function packageRoot(): string {
  * If all fail, return tried so the caller can put it into the failure reason injected into the
  * sub-agent's first turn.
  */
-function resolveWebAccessExtension(): { path: string } | { tried: string[] } {
+export function resolveWebAccessExtension(): { path: string } | { tried: string[] } {
 	const tried: string[] = [];
 
 	const env = process.env.PI_WEB_ACCESS_EXTENSION?.trim();
@@ -88,7 +88,7 @@ function isWebAccessGloballyInstalled(): boolean {
  * pi-web-access package dir (used to match tool source): a tool's sourceInfo.path is the extension
  * entry file, so prefix matching must use the package dir.
  */
-function resolveWebAccessDir(): string | undefined {
+export function resolveWebAccessDir(): string | undefined {
 	const env = process.env.PI_WEB_ACCESS_EXTENSION?.trim();
 	if (env) return dirname(env);
 	try {
@@ -124,10 +124,16 @@ function swapPersona(base: string, hasCustomPrompt: boolean): string {
  * web-research sub-agent bootstrap entry (runs at factory time), called by index.ts when role.web is set.
  */
 export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
+	// pi-web-access package dir, resolved once: used by the already-loaded check, the narrowing
+	// path match, and (in the failure branch) the -e fallback.
+	const webAccessDir = resolveWebAccessDir();
+
 	// Tool names pi-web-access registers dynamically: proxy mod.default(pi) to catch its registerTool calls
 	const webAccessToolNames = new Set<string>();
-	// pi-web-access package dir: used to match by tool source path when narrowing
-	const webAccessDir = resolveWebAccessDir();
+
+	// When the extension was loaded via pi's --extension CLI flag, its tools are already registered
+	// by the time this factory runs: the dynamic load below must be skipped (the registerTool proxy
+	// would double-register otherwise), but narrowing and persona reshaping still run.
 
 	/**
 	 * Keep-or-drop check: does this tool stay in the web-research sub-agent. Judge by source
@@ -197,7 +203,14 @@ export async function bootstrapWebResearch(pi: ExtensionAPI): Promise<void> {
 		},
 	);
 
+	// -e loaded tools come with source paths, so the alreadyLoaded check works without the name
+	// recording; the global install path registers through the same ExtensionAPI instance.
 	if (isWebAccessGloballyInstalled()) return;
+
+	const alreadyLoaded =
+		webAccessDir !== undefined &&
+		pi.getAllTools().some((tool) => (tool.sourceInfo?.path ?? "").startsWith(`${webAccessDir}/`));
+	if (alreadyLoaded) return;
 
 	const resolved = resolveWebAccessExtension();
 	let failure: string | undefined;

@@ -3,8 +3,11 @@
  * single-value last-wins rule, see launch/launch.ts.
  * (advisor left this framework: see launch/advisor-fork.ts for its fork-based flags.)
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { WATCHDOG_TOOL } from "../completion/profile";
 import { shQuote } from "../core/tmux";
+import { resolveWebAccessDir } from "../session/web-bootstrap";
 
 /**
  * Tool set allowed in verification mode: read/bash for judging and running checks, write/edit
@@ -165,11 +168,28 @@ export const WEB_RESEARCH_APPEND_PROMPT = `Additional rules for this web-researc
 - Deliverable protocol (from your brief): write conclusions with source URLs to the result.md path given there.`;
 
 /**
- * web-research preset flags: inject the research discipline section with pi's public CLI arg
- * --append-system-prompt. shQuote is essential: the prompt is multi-line, and raw newlines in the
- * pane command would be read by the shell as command separators, splitting the whole section into
- * several pi positional args.
+ * Resolve the pi-web-access extension entry for the --extension CLI flag. Reuses the same fallback
+ * chain as web-bootstrap (env PI_WEB_ACCESS_EXTENSION -> sibling checkout); returns undefined when
+ * nothing is found, so the caller can fall back to the in-process dynamic load + failure note.
+ */
+function webAccessExtensionFlag(): string[] {
+	const env = process.env.PI_WEB_ACCESS_EXTENSION?.trim();
+	if (env && existsSync(env)) return ["--extension", env];
+	const dir = resolveWebAccessDir();
+	if (dir !== undefined) {
+		const entry = join(dir, "index.ts");
+		if (existsSync(entry)) return ["--extension", entry];
+	}
+	return [];
+}
+
+/**
+ * web-research preset flags: load pi-web-access with pi's public CLI arg --extension (pi resolves
+ * the module graph itself, no hand-rolled dynamic import), and inject the research discipline
+ * section with --append-system-prompt. shQuote is essential: the prompt is multi-line, and raw
+ * newlines in the pane command would be read by the shell as command separators, splitting the
+ * whole section into several pi positional args.
  */
 export function webResearchPresetFlags(): string[] {
-	return ["--append-system-prompt", shQuote(WEB_RESEARCH_APPEND_PROMPT)];
+	return [...webAccessExtensionFlag(), "--append-system-prompt", shQuote(WEB_RESEARCH_APPEND_PROMPT)];
 }
