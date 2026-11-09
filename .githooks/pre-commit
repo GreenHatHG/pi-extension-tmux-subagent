@@ -6,7 +6,7 @@ npx biome check --no-errors-on-unmatched --staged --write || {
 	echo "biome check 存在无法自动修复的问题，commit 被拦截。运行 pnpm run format 后重试。"
 	exit 1
 }
-changed=$(git diff --name-only)
+changed=$(git diff --cached --name-only)
 [ -n "$changed" ] && git add $changed
 
 # 测试：快速验证，拦截破坏性提交
